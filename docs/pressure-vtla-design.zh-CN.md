@@ -2,7 +2,7 @@
 
 核查日期：2026-10-29。官方代码基线：`Physical-Intelligence/openpi@215abfb217dbac7d5f1273282331b9b1866c0479`。
 
-**交付状态：已基于官方 openpi 实现 PyTorch 压力阵列接入，CPU 93 项测试通过；未加载完整 π0.5 权重或运行完整模型训练。** 源码与运行说明见 [中文使用说明](../README_VTLA.zh-CN.md)。用户已明确触觉为电阻式压力阵列，非视触觉，本机仅 CPU。阵列数量、分辨率、读数格式、标定、机器人和频率仍待绑定。下文的 token 数与训练阶段是建议值，不是任务效果结论。缓存一致性使用调用真实模型方法的小型替身主干测试，未验证完整官方主干的数值一致性。
+**交付状态：已基于官方 openpi 实现 PyTorch 压力阵列接入，CPU 组件测试 109 项通过；另已通过合成数据和随机初始化小模型的真实模块集成测试。未加载完整 π0.5 权重或运行完整模型训练。** 源码与运行说明见 [中文使用说明](../README_VTLA.zh-CN.md)。触觉为电阻式压力阵列，非视触觉，本机仅 CPU。阵列数量、分辨率、读数格式、标定、机器人和频率仍待绑定。下文的 token 数与训练阶段是建议值，不是任务效果结论。缓存数值一致性使用调用真实模型方法的小型替身主干测试，未验证完整官方主干的数值一致性。
 
 ## 1. 改造边界与选型
 
@@ -224,10 +224,10 @@ mask-only 测试或假数据 loss 下降不能替代完整训练验证。全部�
 2. 已完成 NPZ/manifest 读取与因果对齐，用落盘的合成 episode 验证；真实设备数据未定。
 3. 已实现 patch MLP encoder、prefix 拼接、mask 与位置编号接入。
 4. 已实现受控基座加载、训练冻结/优化器筛选与 checkpoint/统计资产恢复，用小模型验证梯度和恢复契约。
-5. 已实现压力进入 cached inference；小型替身主干下调用真实 PI0Pytorch 方法的 joint/cached 一致性通过。
+5. 已实现压力进入 cached inference；小型替身主干下 joint/cached 一致性通过，真实小模型的 CPU 训练、保存、恢复和推理集成测试通过。
 6. 待硬件与数据绑定后运行真实样本、完整官方权重及任务评估。
 
-CPU 环境：Python 3.11.1、torch 2.7.1+cpu、numpy 1.26.4，`cuda_available=False`；`pytest tests/vtla -q` 为 93 passed in 9.52s，21 个修改/新增 Python 文件 Ruff、格式与语法编译检查通过。AST 对比确认原动作 suffix、denoise_step、时间/噪声采样及 Flow Matching 目标表达式保持不变。未安装完整官方训练依赖；JAX 压力模型明确未实现。
+本机 CPU 环境：Python 3.11.1、torch 2.7.1+cpu、numpy 1.26.4，`cuda_available=False`；`pytest tests/vtla -q` 为 109 passed in 15.61s。GitHub Linux CPU 环境通过随机初始化小模型集成测试。原动作 suffix、denoise_step、时间/噪声采样及 Flow Matching 目标表达式与上游一致。未加载官方权重；JAX 压力模型明确未实现。
 
 尚缺：阵列数量与行列数、安装布局、raw ADC/电压/电阻或标定压力的样例字段；标定/坏点/量程契约；机器人与动作定义；采样/控制频率和可接受延迟；真实数据规模与完整主干运行资源。它们影响具体配置，不影响本文“数值触觉条件接入前缀、保留动作后缀”的总体设计。
 

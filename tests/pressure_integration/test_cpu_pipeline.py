@@ -142,6 +142,11 @@ def test_synthetic_npz_train_final_checkpoint_resume_and_policy_inference(tmp_pa
     del policy
     gc.collect()
 
+    incompatible = dataclasses.replace(deployed, data=dataclasses.replace(deployed.data, robot_action_dim=2))
+    with pytest.raises(ValueError, match="contract differs"):
+        policy_config.create_trained_policy(incompatible, first, pytorch_device="cpu")
+    gc.collect()
+
     # A resumed third update must use the saved optimizer/model and write step 3.
     train_pytorch.train_loop(dataclasses.replace(cfg, resume=True, num_train_steps=3))
     assert (cfg.checkpoint_dir / "3" / "model.safetensors").is_file()

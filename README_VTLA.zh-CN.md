@@ -6,6 +6,8 @@
 
 2026-10-29 验证：Python 3.11.1、torch 2.7.1+cpu、numpy 1.26.4，`cuda_available=False`；CPU 测试 **93 passed in 9.52s**，21 个修改/新增 Python 文件 Ruff、格式与语法编译检查通过。源码保留上游历史，硬件参数与真实数据仍待绑定。
 
+后续开发验证：本机 CPU 组件测试 **109 passed in 15.61s**。GitHub 的 Linux CPU 环境还通过了随机初始化小模型、合成 NPZ 和测试词表的真实数据/模型/训练/恢复/推理集成测试。它不代表预训练 π0.5 权重或真实硬件结果。
+
 ## 实现内容
 
 - 数值压力阵列独立于 RGB 图像、机器人 `state` 和动作标签；不生成伪彩图，不经过 SigLIP 或图像增强。
@@ -34,6 +36,8 @@ Linux/macOS 对应使用 `.venv-pressure/bin/python`。组件测试使用 CPU；
 
 ```powershell
 python -m venv .venv-integration
+.\.venv-integration\Scripts\python.exe -m pip install --upgrade pip
+.\.venv-integration\Scripts\python.exe -m pip install torch==2.7.1+cpu torchvision==0.22.1+cpu --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
 .\.venv-integration\Scripts\python.exe -m pip install -r requirements-pressure-integration-cpu.txt
 .\.venv-integration\Scripts\python.exe scripts/install_transformers_patch.py
 .\.venv-integration\Scripts\python.exe -m pytest tests/pressure_integration -q
