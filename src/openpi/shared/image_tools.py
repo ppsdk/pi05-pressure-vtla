@@ -62,7 +62,7 @@ def resize_with_pad_torch(
     by padding with black. If the image is float32, it must be in the range [-1, 1].
 
     Args:
-        images: Tensor of shape [*b, h, w, c] or [*b, c, h, w]
+        images: Tensor of shape [h, w, c], [c, h, w], [b, h, w, c], or [b, c, h, w]
         height: Target height
         width: Target width
         mode: Interpolation mode ('bilinear', 'nearest', etc.)
@@ -70,6 +70,9 @@ def resize_with_pad_torch(
     Returns:
         Resized and padded tensor with same shape format as input
     """
+    if images.dim() not in (3, 4):
+        raise ValueError(f"Expected an unbatched or batched image tensor, got {images.dim()} dimensions")
+    added_batch_dim = images.dim() == 3
     # Check if input is in channels-last format [*b, h, w, c] or channels-first [*b, c, h, w]
     if images.shape[-1] <= 4:  # Assume channels-last format
         channels_last = True
@@ -82,7 +85,7 @@ def resize_with_pad_torch(
         if images.dim() == 3:
             images = images.unsqueeze(0)  # Add batch dimension
 
-    batch_size, channels, cur_height, cur_width = images.shape
+    cur_height, cur_width = images.shape[-2:]
 
     # Calculate resize ratio
     ratio = max(cur_width / width, cur_height / height)
@@ -120,7 +123,7 @@ def resize_with_pad_torch(
     # Convert back to original format if needed
     if channels_last:
         padded_images = padded_images.permute(0, 2, 3, 1)  # [b, c, h, w] -> [b, h, w, c]
-        if batch_size == 1 and images.shape[0] == 1:
-            padded_images = padded_images.squeeze(0)  # Remove batch dimension if it was added
+    if added_batch_dim:
+        padded_images = padded_images.squeeze(0)
 
     return padded_images
