@@ -4,6 +4,7 @@ checkpoints/
 data/
 wandb/
 .venv-pressure/
+.venv-integration/
 *.safetensors
 *.ckpt
 

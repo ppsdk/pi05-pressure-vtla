@@ -228,15 +228,36 @@ class PressureNpzDataConfig(DataConfigFactory):
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        return self._create(assets_dirs, model_config, for_inference=False)
+
+    def create_for_inference(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        """Build input/output transforms without requiring the original training manifest."""
+        return self._create(assets_dirs, model_config, for_inference=True)
+
+    def _create(
+        self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig, *, for_inference: bool
+    ) -> DataConfig:
         if getattr(model_config, "pressure", None) is None:
             raise ValueError("PressureNpzDataConfig requires a pressure-enabled model")
-        if not self.manifest_path or not self.pressure_stats_path:
-            raise ValueError("Set manifest_path and pressure_stats_path to real training data/assets")
+        if not self.pressure_stats_path or (not for_inference and not self.manifest_path):
+            raise ValueError("Set pressure_stats_path and, for training, manifest_path")
         if not 0 < self.robot_action_dim <= model_config.action_dim:
             raise ValueError("Set robot_action_dim to the real robot's dimension (at most model.action_dim)")
+        if for_inference:
+            # State/action stats come from the checkpoint, not an original training path.
+            repo_id = self.repo_id if self.repo_id is not tyro.MISSING else None
+            base = dataclasses.replace(
+                self.base_config or DataConfig(),
+                repo_id=repo_id,
+                asset_id=self.assets.asset_id or repo_id,
+                norm_stats=None,
+                use_quantile_norm=model_config.model_type != ModelType.PI0,
+            )
+        else:
+            base = self.create_base_config(assets_dirs, model_config)
         return dataclasses.replace(
-            self.create_base_config(assets_dirs, model_config),
-            pressure_manifest=self.manifest_path,
+            base,
+            pressure_manifest=self.manifest_path or None,
             pressure_stats_path=self.pressure_stats_path,
             robot_action_dim=self.robot_action_dim,
             data_transforms=_transforms.Group(
@@ -621,6 +642,11 @@ _CONFIGS = [
         name="pi05_pressure_debug",
         model=pi0_config.Pi0Config(
             pi05=True,
+            paligemma_variant="dummy",
+            action_expert_variant="dummy",
+            pytorch_debug_tiny=True,
+            action_dim=8,
+            action_horizon=4,
             pressure=PressureConfig(num_sensors=2, rows=8, cols=8),
             pytorch_compile_mode=None,
         ),

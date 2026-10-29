@@ -34,12 +34,18 @@ class Pi0Config(_model.BaseModelConfig):
     discrete_state_input: bool = None  # type: ignore
 
     pytorch_compile_mode: str | None = "max-autotune"
+    # Randomly initialized small model for CPU integration tests, never for base checkpoints.
+    pytorch_debug_tiny: bool = False
     # Optional numeric pressure-array prefix. Currently supported by PyTorch only.
     pressure: PressureConfig | None = None
 
     def __post_init__(self):
         if self.pressure is not None and not self.pi05:
             raise ValueError("The pressure prefix currently requires pi05=True")
+        if self.pytorch_debug_tiny and (
+            not self.pi05 or self.paligemma_variant != "dummy" or self.action_expert_variant != "dummy"
+        ):
+            raise ValueError("pytorch_debug_tiny requires pi05=True and both Gemma variants set to dummy")
         if self.max_token_len is None:
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)
         if self.discrete_state_input is None:

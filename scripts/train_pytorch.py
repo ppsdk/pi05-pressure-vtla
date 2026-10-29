@@ -153,7 +153,7 @@ def save_checkpoint(model, optimizer, global_step, config, is_main, data_config)
         return
 
     # Only save if it's time to save or if it's the final step
-    if (global_step % config.save_interval == 0 and global_step > 0) or global_step == config.num_train_steps - 1:
+    if _pressure_training.should_save_checkpoint(global_step, config.num_train_steps, config.save_interval):
         # Create temporary directory for atomic checkpoint saving
         final_ckpt_dir = config.checkpoint_dir / f"{global_step}"
         tmp_ckpt_dir = config.checkpoint_dir / f"tmp_{global_step}"
@@ -178,17 +178,22 @@ def save_checkpoint(model, optimizer, global_step, config, is_main, data_config)
         }
         torch.save(metadata, tmp_ckpt_dir / "metadata.pt")
 
+        # Save the state/action statistics before recording their checkpoint contract.
+        norm_stats = data_config.norm_stats
+        norm_stats_path = None
+        if norm_stats is not None and data_config.asset_id is not None:
+            norm_dir = tmp_ckpt_dir / "assets" / data_config.asset_id
+            _normalize.save(norm_dir, norm_stats)
+            norm_stats_path = norm_dir / "norm_stats.json"
+
         _pressure_training.save_pressure_metadata(
             model_to_save,
             tmp_ckpt_dir,
             freeze_backbone=config.pressure_freeze_backbone,
             stats_path=getattr(data_config, "pressure_stats_path", None),
+            policy_contract=_pressure_training.pressure_policy_contract(model_to_save.config, data_config),
+            norm_stats_path=norm_stats_path,
         )
-
-        # save norm stats
-        norm_stats = data_config.norm_stats
-        if norm_stats is not None and data_config.asset_id is not None:
-            _normalize.save(tmp_ckpt_dir / "assets" / data_config.asset_id, norm_stats)
 
         # Atomically move temp directory to final location
         if final_ckpt_dir.exists():
@@ -222,6 +227,16 @@ def load_checkpoint(model, optimizer, checkpoint_dir, device, *, config=None, da
         ckpt_dir,
         freeze_backbone=getattr(config, "pressure_freeze_backbone", False),
         stats_path=getattr(data_config, "pressure_stats_path", None),
+        policy_contract=(
+            _pressure_training.pressure_policy_contract(model_to_load.config, data_config)
+            if data_config is not None
+            else None
+        ),
+        current_norm_stats_json=(
+            _normalize.serialize_json(data_config.norm_stats)
+            if data_config is not None and data_config.norm_stats is not None
+            else None
+        ),
     )
 
     # Clear memory before loading checkpoints
@@ -416,6 +431,7 @@ def train_loop(config: _config.TrainConfig):
             paligemma_variant=getattr(config.model, "paligemma_variant", "gemma_2b"),
             action_expert_variant=getattr(config.model, "action_expert_variant", "gemma_300m"),
             pi05=getattr(config.model, "pi05", False),
+            pytorch_debug_tiny=getattr(config.model, "pytorch_debug_tiny", False),
             pressure=getattr(config.model, "pressure", None),
         )
     else:

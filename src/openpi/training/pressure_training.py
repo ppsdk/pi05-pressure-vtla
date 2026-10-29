@@ -81,18 +81,57 @@ def _file_hash(path: str | Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def _norm_stats_hash(content: str) -> str:
+    """Hash the JSON data independently of whitespace and platform line endings."""
+    canonical = json.dumps(json.loads(content), sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def pressure_policy_contract(model_config, data_config) -> dict | None:
+    """Capture the action and normalization settings needed to reproduce a real policy."""
+    robot_action_dim = getattr(data_config, "robot_action_dim", None)
+    if robot_action_dim is None:
+        return None  # Fake-data diagnostics have no real robot or state/action statistics.
+    asset_id = data_config.asset_id
+    if not asset_id or Path(asset_id).is_absolute() or ".." in Path(asset_id).parts:
+        raise ValueError("A real pressure policy requires a valid relative state/action asset_id.")
+    return {
+        "robot_action_dim": robot_action_dim,
+        "model_action_dim": model_config.action_dim,
+        "action_horizon": model_config.action_horizon,
+        "max_token_len": model_config.max_token_len,
+        "discrete_state_input": model_config.discrete_state_input,
+        "use_quantile_norm": data_config.use_quantile_norm,
+        "asset_id": asset_id,
+        "paligemma_variant": getattr(model_config, "paligemma_variant", None),
+        "action_expert_variant": getattr(model_config, "action_expert_variant", None),
+        "pytorch_debug_tiny": getattr(model_config, "pytorch_debug_tiny", False),
+    }
+
+
+def should_save_checkpoint(global_step: int, num_train_steps: int, save_interval: int) -> bool:
+    """Steps are counted after optimizer updates; always persist the final update."""
+    if save_interval <= 0:
+        raise ValueError("save_interval must be positive")
+    return global_step > 0 and (global_step % save_interval == 0 or global_step == num_train_steps)
+
+
 def save_pressure_metadata(
     model: torch.nn.Module,
     checkpoint_dir: str | Path,
     *,
     freeze_backbone: bool,
     stats_path: str | Path | None = None,
+    policy_contract: dict | None = None,
+    norm_stats_path: str | Path | None = None,
 ) -> None:
     """Save the branch contract and an immutable copy of its normalization asset."""
     config = _pressure_config(model)
     if config is None:
         return
     checkpoint_dir = Path(checkpoint_dir)
+    if policy_contract is not None and stats_path is None:
+        raise ValueError("Real pressure checkpoints require pressure normalization statistics")
     stats_hash = None
     if stats_path is not None:
         target = checkpoint_dir / "assets" / "pressure_stats.npz"
@@ -105,6 +144,15 @@ def save_pressure_metadata(
         "freeze_backbone": freeze_backbone,
         "stats_sha256": stats_hash,
     }
+    if policy_contract is not None:
+        if norm_stats_path is None:
+            raise ValueError("Real pressure checkpoints require saved state/action normalization statistics")
+        expected_norm_path = checkpoint_dir / "assets" / policy_contract["asset_id"] / "norm_stats.json"
+        if Path(norm_stats_path).resolve() != expected_norm_path.resolve():
+            raise ValueError("State/action normalization must be saved in the checkpoint assets directory")
+        metadata["schema_version"] = 2
+        metadata["policy_contract"] = policy_contract
+        metadata["norm_stats_sha256"] = _norm_stats_hash(Path(norm_stats_path).read_text(encoding="utf-8"))
     (checkpoint_dir / "pressure_config.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
 
 
@@ -114,6 +162,8 @@ def validate_pressure_metadata(
     *,
     freeze_backbone: bool,
     stats_path: str | Path | None = None,
+    policy_contract: dict | None = None,
+    current_norm_stats_json: str | None = None,
 ) -> None:
     """Reject resume with different hardware/token, freeze, or normalization contracts."""
     checkpoint_dir = Path(checkpoint_dir)
@@ -126,7 +176,8 @@ def validate_pressure_metadata(
             )
         return
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    if metadata.get("schema_version") != 1:
+    schema = metadata.get("schema_version")
+    if schema not in (1, 2):
         raise ValueError("Unsupported pressure checkpoint metadata version.")
     if metadata.get("pressure") != config:
         raise ValueError("Pressure configuration differs from the checkpoint.")
@@ -138,3 +189,17 @@ def validate_pressure_metadata(
         raise ValueError("Pressure normalization statistics differ from the checkpoint.")
     if expected_hash is not None and _file_hash(checkpoint_dir / "assets" / "pressure_stats.npz") != expected_hash:
         raise ValueError("The pressure normalization asset in the checkpoint was modified.")
+    if schema == 1 and policy_contract is not None:
+        logging.warning("Legacy pressure checkpoint has no action or state/action normalization contract to verify.")
+    if schema == 2:
+        if policy_contract is None or metadata.get("policy_contract") != policy_contract:
+            raise ValueError("Pressure policy action, tokenization, or normalization contract differs from checkpoint.")
+        asset_id = policy_contract.get("asset_id")
+        if not asset_id or Path(asset_id).is_absolute() or ".." in Path(asset_id).parts:
+            raise ValueError("Pressure checkpoint requires a valid relative state/action asset_id.")
+        norm_path = checkpoint_dir / "assets" / asset_id / "norm_stats.json"
+        expected_norm_hash = metadata.get("norm_stats_sha256")
+        if not expected_norm_hash or _norm_stats_hash(norm_path.read_text(encoding="utf-8")) != expected_norm_hash:
+            raise ValueError("Checkpoint state/action normalization statistics differ from the saved contract.")
+        if current_norm_stats_json is not None and _norm_stats_hash(current_norm_stats_json) != expected_norm_hash:
+            raise ValueError("Current state/action normalization statistics differ from the checkpoint.")

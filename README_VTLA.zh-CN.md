@@ -28,7 +28,18 @@ python -m venv .venv-pressure
 
 Linux/macOS 对应使用 `.venv-pressure/bin/python`。组件测试使用 CPU；GitHub Actions 执行相同测试集。
 
-`pi05_pressure_debug` 是完整模型工厂的假数据形状配置，仍会构建完整主干；它不是上述小型 CPU 测试的替代命令。
+`pi05_pressure_debug` 现在使用随机初始化的小型视觉塔和 dummy Gemma 专家，可用于 CPU 链路调试；它不兼容官方 π0.5 权重，不能用于声称策略性能。
+
+要额外运行含真实 openpi 数据转换、模型模块、训练脚本、checkpoint 恢复和策略推理的 CPU 集成测试，可在仓库根目录创建独立环境：
+
+```powershell
+python -m venv .venv-integration
+.\.venv-integration\Scripts\python.exe -m pip install -r requirements-pressure-integration-cpu.txt
+.\.venv-integration\Scripts\python.exe scripts/install_transformers_patch.py
+.\.venv-integration\Scripts\python.exe -m pytest tests/pressure_integration -q
+```
+
+替换脚本只接受虚拟环境内的 Transformers 4.53.2，并安装仓库原有的 openpi 替换文件。集成测试使用合成 NPZ、测试用 SentencePiece 词表与随机初始化的缩小模型；不会下载官方模型权重。完整的官方模型、真实数据和真实词表需要按上游说明另行配置。
 
 ## 数据契约
 
@@ -121,7 +132,9 @@ uv run scripts/train_pytorch.py pi05_pressure --exp_name pressure_run --pytorch_
 
 原 `compute_norm_stats.py` 继续只统计 state/actions，压力统计单独保存。`pressure_freeze_backbone=True` 冻结旧 VLM 参数，优化器仅接收可训练参数。默认压力训练精度为 float32；CPU 部署压力模型时也选择 float32 并关闭编译。完整主干在本机的时间和内存可行性尚未测量。
 
-checkpoint 包含 `model.safetensors`、原训练状态、`pressure_config.json`、`assets/pressure_stats.npz` 及原 state/action 统计。恢复时检查压力几何/token/冻结契约和统计资产；在线创建 policy 时使用 checkpoint 内压力统计，不依赖可变的训练统计文件。
+checkpoint 包含 `model.safetensors`、原训练状态、`pressure_config.json`、`assets/pressure_stats.npz` 及原 state/action 统计。新 checkpoint 同时记录机器人动作维数、模型动作时域、状态文本化与归一化配置，并校验 state/action 统计内容；最后一次优化器更新也会保存。在线创建 policy 时使用 checkpoint 内统计，不需要保留训练 manifest 或训练资产目录。
+
+旧版 schema 1 的 checkpoint 没有动作与 state/action 统计契约：加载时仍兼容，但会发出无法核验这些配置的警告。切换这些设置后不能把旧 checkpoint 视为自动验证一致。
 
 ## 文件地图与证据边界
 

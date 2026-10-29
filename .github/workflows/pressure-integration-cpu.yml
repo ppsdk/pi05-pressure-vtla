@@ -1,0 +1,42 @@
+name: Pressure VTLA CPU integration
+
+on:
+  push:
+    branches: [main, vtla-cpu-integration]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CUDA_VISIBLE_DEVICES: ""
+      GIT_LFS_SKIP_SMUDGE: "1"
+      WANDB_MODE: disabled
+      OMP_NUM_THREADS: "2"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements-pressure-cpu.txt
+            requirements-pressure-integration-cpu.txt
+      - name: Install CPU dependencies in an isolated environment
+        run: |
+          python -m venv .venv-integration
+          . .venv-integration/bin/activate
+          python -m pip install --upgrade pip uv
+          python -m pip install torch==2.7.1+cpu torchvision==0.22.1+cpu --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+          uv pip install -r requirements-pressure-integration-cpu.txt
+          python scripts/install_transformers_patch.py
+      - name: Verify CPU and run the real small-model pipeline
+        run: |
+          . .venv-integration/bin/activate
+          python -c "import torch; assert not torch.cuda.is_available(); print(torch.__version__)"
+          python -m pytest tests/pressure_integration -q

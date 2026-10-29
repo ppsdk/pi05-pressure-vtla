@@ -1,4 +1,5 @@
 import dataclasses
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -9,7 +10,9 @@ from torch import nn
 from openpi.models.pressure_config import PressureConfig
 from openpi.training.pressure_training import configure_trainable_parameters
 from openpi.training.pressure_training import load_base_weights
+from openpi.training.pressure_training import pressure_policy_contract
 from openpi.training.pressure_training import save_pressure_metadata
+from openpi.training.pressure_training import should_save_checkpoint
 from openpi.training.pressure_training import validate_pressure_metadata
 
 
@@ -169,3 +172,99 @@ def test_metadata_without_stats_and_full_weight_roundtrip(tmp_path):
     validate_pressure_metadata(target, tmp_path, freeze_backbone=False)
     sample = torch.randn(2, 3)
     torch.testing.assert_close(target(sample), original(sample))
+
+
+@pytest.mark.parametrize(
+    ("step", "total", "interval", "expected"),
+    [(0, 1, 100, False), (1, 1, 100, True), (3, 4, 100, False), (4, 4, 100, True), (10, 25, 10, True)],
+)
+def test_checkpoint_schedule_includes_the_final_optimizer_update(step, total, interval, expected):
+    assert should_save_checkpoint(step, total, interval) is expected
+
+
+def test_checkpoint_schedule_rejects_nonpositive_interval():
+    with pytest.raises(ValueError, match="positive"):
+        should_save_checkpoint(1, 1, 0)
+
+
+def _contract():
+    model_config = SimpleNamespace(action_dim=32, action_horizon=10, max_token_len=200, discrete_state_input=True)
+    data_config = SimpleNamespace(robot_action_dim=7, use_quantile_norm=True, asset_id="robot/data")
+    return pressure_policy_contract(model_config, data_config)
+
+
+def test_real_checkpoint_contract_rejects_action_and_normalization_drift(tmp_path):
+    model = TinyPolicy()
+    pressure_stats = tmp_path / "input-pressure.npz"
+    pressure_stats.write_bytes(b"fixed pressure stats")
+    asset = tmp_path / "checkpoint" / "assets" / "robot" / "data" / "norm_stats.json"
+    asset.parent.mkdir(parents=True)
+    content = {"norm_stats": {"state": {"mean": [0.0]}, "actions": {"mean": [1.0]}}}
+    asset.write_text(json.dumps(content, indent=2), encoding="utf-8")
+    contract = _contract()
+    save_pressure_metadata(
+        model,
+        asset.parents[3],
+        freeze_backbone=True,
+        stats_path=pressure_stats,
+        policy_contract=contract,
+        norm_stats_path=asset,
+    )
+    checkpoint = asset.parents[3]
+    validate_pressure_metadata(
+        model,
+        checkpoint,
+        freeze_backbone=True,
+        stats_path=pressure_stats,
+        policy_contract=contract,
+        current_norm_stats_json=json.dumps(content, separators=(",", ":")),
+    )
+    with pytest.raises(ValueError, match="contract differs"):
+        validate_pressure_metadata(
+            model,
+            checkpoint,
+            freeze_backbone=True,
+            stats_path=pressure_stats,
+            policy_contract={**contract, "robot_action_dim": 8},
+        )
+    with pytest.raises(ValueError, match="Current state/action"):
+        validate_pressure_metadata(
+            model,
+            checkpoint,
+            freeze_backbone=True,
+            stats_path=pressure_stats,
+            policy_contract=contract,
+            current_norm_stats_json=json.dumps({"different": True}),
+        )
+    asset.write_text(json.dumps({"different": True}), encoding="utf-8")
+    with pytest.raises(ValueError, match="Checkpoint state/action"):
+        validate_pressure_metadata(
+            model,
+            checkpoint,
+            freeze_backbone=True,
+            stats_path=pressure_stats,
+            policy_contract=contract,
+        )
+
+
+def test_legacy_checkpoint_loads_with_explicit_contract_warning(tmp_path, caplog):
+    model = TinyPolicy()
+    save_pressure_metadata(model, tmp_path, freeze_backbone=False)
+    validate_pressure_metadata(model, tmp_path, freeze_backbone=False, policy_contract=_contract())
+    assert "no action or state/action normalization contract" in caplog.text
+
+
+def test_real_contract_requires_pressure_and_state_action_assets(tmp_path):
+    model = TinyPolicy()
+    with pytest.raises(ValueError, match="pressure normalization"):
+        save_pressure_metadata(model, tmp_path, freeze_backbone=False, policy_contract=_contract())
+    pressure_stats = tmp_path / "pressure.npz"
+    pressure_stats.write_bytes(b"pressure")
+    with pytest.raises(ValueError, match="state/action normalization"):
+        save_pressure_metadata(
+            model,
+            tmp_path,
+            freeze_backbone=False,
+            policy_contract=_contract(),
+            stats_path=pressure_stats,
+        )

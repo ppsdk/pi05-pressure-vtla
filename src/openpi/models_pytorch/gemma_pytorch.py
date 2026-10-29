@@ -15,6 +15,8 @@ class PaliGemmaWithExpertModel(nn.Module):
         action_expert_config,
         use_adarms=None,
         precision: Literal["bfloat16", "float32"] = "bfloat16",
+        *,
+        debug_small_vision: bool = False,
     ):
         if use_adarms is None:
             use_adarms = [False, False]
@@ -38,6 +40,15 @@ class PaliGemmaWithExpertModel(nn.Module):
         vlm_config_hf.vision_config.projection_dim = 2048
         vlm_config_hf.vision_config.projector_hidden_act = "gelu_fast"
         vlm_config_hf.vision_config.torch_dtype = "float32"
+        if debug_small_vision:
+            # Small, random test network; normal π0.5 vision dimensions remain unchanged.
+            vlm_config_hf.vision_config.hidden_size = 64
+            vlm_config_hf.vision_config.intermediate_size = 128
+            vlm_config_hf.vision_config.num_hidden_layers = 2
+            vlm_config_hf.vision_config.num_attention_heads = 4
+            vlm_config_hf.vision_config.image_size = 28
+            vlm_config_hf.vision_config.patch_size = 14
+            vlm_config_hf.vision_config.projection_dim = vlm_config.width
 
         action_expert_config_hf = CONFIG_MAPPING["gemma"](
             head_dim=action_expert_config.head_dim,
@@ -93,7 +104,7 @@ class PaliGemmaWithExpertModel(nn.Module):
         position_ids: torch.LongTensor | None = None,
         past_key_values: list[torch.FloatTensor] | None = None,
         inputs_embeds: list[torch.FloatTensor] | None = None,
-        use_cache: bool | None = None,
+        use_cache: bool | None = None,  # noqa: FBT001 - preserve upstream public API
         adarms_cond: list[torch.Tensor] | None = None,
     ):
         if adarms_cond is None:

@@ -2,7 +2,7 @@
 
 基于官方 [openpi](https://github.com/Physical-Intelligence/openpi) 的电阻式压力阵列触觉扩展，采用 **PyTorch**。压力 token 在输入前缀中与视觉、语言和机器人状态融合，保留原 ActionExpert 与 Flow Matching 动作生成结构。
 
-这是工程实现首版。**CPU 93 项测试通过；尚未加载完整 π0.5 权重、运行完整模型训练或验证真实机器人效果。**
+这是工程实现首版。**CPU 组件测试已通过；尚未加载完整 π0.5 权重、运行完整模型训练或验证真实机器人效果。**
 
 ## 文档入口
 

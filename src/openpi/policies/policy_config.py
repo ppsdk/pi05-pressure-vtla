@@ -10,8 +10,10 @@ import torch
 import openpi.models.model as _model
 import openpi.policies.policy as _policy
 import openpi.shared.download as download
+import openpi.shared.normalize as _normalize
 from openpi.training import checkpoints as _checkpoints
 from openpi.training import config as _config
+from openpi.training.pressure_training import pressure_policy_contract
 from openpi.training.pressure_training import validate_pressure_metadata
 import openpi.transforms as transforms
 
@@ -75,16 +77,20 @@ def create_trained_policy(
             train_config.model.dtype if getattr(train_config.model, "pressure", None) is not None else "bfloat16"
         )
         model.paligemma_with_expert.to_bfloat16_for_selected_params(precision)
-        if getattr(train_config.model, "pressure", None) is not None:
-            validate_pressure_metadata(
-                model,
-                checkpoint_dir,
-                freeze_backbone=train_config.pressure_freeze_backbone,
-                stats_path=stats_path,
-            )
     else:
         model = train_config.model.load(_model.restore_params(checkpoint_dir / "params", dtype=jnp.bfloat16))
-    data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
+    if getattr(train_config.model, "pressure", None) is not None:
+        data_config = train_config.data.create_for_inference(train_config.assets_dirs, train_config.model)
+        validate_pressure_metadata(
+            model,
+            checkpoint_dir,
+            freeze_backbone=train_config.pressure_freeze_backbone,
+            stats_path=stats_path,
+            policy_contract=pressure_policy_contract(model.config, data_config),
+            current_norm_stats_json=_normalize.serialize_json(norm_stats) if norm_stats is not None else None,
+        )
+    else:
+        data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
     if norm_stats is None:
         # We are loading the norm stats from the checkpoint instead of the config assets dir to make sure
         # that the policy is using the same normalization stats as the original training process.

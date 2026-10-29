@@ -11,6 +11,8 @@ Date: 2026-10-29. Upstream baseline: `215abfb217dbac7d5f1273282331b9b1866c0479`.
 - Python compilation and `git diff --check`: passed.
 - AST comparison against the upstream commit: `embed_suffix`, `denoise_step`, noise/time sampling, and the flow interpolation/target expressions are unchanged.
 
+Subsequent CPU component validation after the checkpoint fixes: `102 passed in 9.44s` locally. The additional full-stack smoke uses a small, randomly initialized model, synthetic NPZ episodes, and a locally generated test tokenizer; see the CPU integration workflow for its latest result.
+
 ## What the tests establish
 
 NPZ reading and causal alignment, fixed signal normalization, missing/bad/saturated taxel handling, pressure tokens and validity, prefix masks and positions, finite gradients to the pressure branch, controlled base initialization, strict VTLA restoration, and checkpoint asset integrity.
@@ -21,4 +23,4 @@ The integration harness calls real `PI0Pytorch` methods with a small two-stream 
 
 No full official π0.5 checkpoint was loaded or trained. No real sensor recording, device calibration, robot task result, full-backbone numerical parity, or closed-loop latency was measured. The example sensor geometry is not a hardware specification.
 
-The GitHub CPU workflow runs the component suite only. It does not install or validate the complete upstream training stack. Original upstream workflows are retained in `docs/upstream-workflows/` for reference.
+The component workflow does not install the complete upstream stack. A separate CPU integration workflow installs the dependencies needed by the small real-model/data pipeline. Neither workflow validates official π0.5 weights or real hardware. Original upstream workflows are retained in `docs/upstream-workflows/` for reference.
