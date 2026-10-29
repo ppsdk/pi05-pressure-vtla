@@ -134,6 +134,38 @@ def test_required_base_camera_and_manifest_fields(tmp_path):
         PressureNpzDataset(manifest(tmp_path, [{"observations": "x"}]), 1, 1)
 
 
+def test_sensor_slot_metadata_supports_gripper_and_forearm(tmp_path):
+    entry = write_episode(
+        tmp_path,
+        pressure_updates={"values": np.zeros((4, 2, 2, 2), dtype=np.float32)},
+    )
+    manifest_path = manifest(
+        tmp_path,
+        [
+            {
+                **entry,
+                "sensor_names": ["left_gripper", "forearm_left"],
+                "sensor_locations": ["gripper_fingertip", "left_forearm"],
+            }
+        ],
+    )
+    dataset = PressureNpzDataset(manifest_path, 1, 1)
+    assert dataset.sensor_names == ("left_gripper", "forearm_left")
+    assert dataset.sensor_locations == ("gripper_fingertip", "left_forearm")
+    sample = dataset[0]
+    assert set(sample) == {"image", "image_mask", "state", "actions", "prompt", "pressure"}
+
+
+def test_sensor_slot_metadata_must_match_geometry(tmp_path):
+    entry = write_episode(tmp_path)
+    path = manifest(
+        tmp_path,
+        [{**entry, "sensor_names": ["only_one", "too_many"]}],
+    )
+    with pytest.raises(ValueError, match="sensor_names"):
+        PressureNpzDataset(path, 1, 1)
+
+
 def test_stats_exclude_missing_saturation_and_nonfinite_taxels(tmp_path):
     values = np.array([[[[0, 10, np.nan, 9]]], [[[2, 30, np.inf, 9]]], [[[4, 50, 7, 9]]]], dtype=np.float32)
     saturated = np.zeros_like(values, dtype=bool)

@@ -23,6 +23,8 @@ class _EpisodeSpec:
     observations: Path
     pressure: Path
     prompt: str
+    sensor_names: tuple[str, ...] = ()
+    sensor_locations: tuple[str, ...] = ()
 
 
 def _read_manifest(manifest_path: str | Path) -> tuple[Path, list[_EpisodeSpec]]:
@@ -37,6 +39,13 @@ def _read_manifest(manifest_path: str | Path) -> tuple[Path, list[_EpisodeSpec]]
             raise ValueError(f"manifest episode {index} requires observations, pressure, and prompt")
         if not isinstance(entry["prompt"], str):
             raise ValueError(f"manifest episode {index} prompt must be a string")
+        sensor_names = entry.get("sensor_names", [])
+        sensor_locations = entry.get("sensor_locations", [])
+        for key, values in (("sensor_names", sensor_names), ("sensor_locations", sensor_locations)):
+            if not isinstance(values, list) or any(not isinstance(value, str) or not value.strip() for value in values):
+                raise ValueError(f"manifest episode {index} {key} must be a list of nonempty strings when provided")
+        if sensor_names and len(set(sensor_names)) != len(sensor_names):
+            raise ValueError(f"manifest episode {index} sensor_names must be unique")
         for key in ("observations", "pressure"):
             if not isinstance(entry[key], str) or not entry[key]:
                 raise ValueError(f"manifest episode {index} {key} must be a nonempty path string")
@@ -45,6 +54,8 @@ def _read_manifest(manifest_path: str | Path) -> tuple[Path, list[_EpisodeSpec]]
                 observations=(path.parent / entry["observations"]).resolve(),
                 pressure=(path.parent / entry["pressure"]).resolve(),
                 prompt=entry["prompt"],
+                sensor_names=tuple(sensor_names),
+                sensor_locations=tuple(sensor_locations),
             )
         )
     return path, episodes
@@ -130,16 +141,26 @@ class PressureNpzDataset:
         self.pressure_geometry = None
         self.robot_action_dim = None
         self.robot_state_dim = None
+        self.sensor_names = None
+        self.sensor_locations = None
         total = 0
         for index, spec in enumerate(self.episodes):
             robot, pressure = self._load_episode(index)
             geometry = pressure.values.shape[1:]
+            sensor_count = geometry[0]
+            for field_name, values in (("sensor_names", spec.sensor_names), ("sensor_locations", spec.sensor_locations)):
+                if values and len(values) != sensor_count:
+                    raise ValueError(
+                        f"manifest episode {index} {field_name} has {len(values)} entries; expected {sensor_count}"
+                    )
             action_dim = robot["actions"].shape[-1]
             state_dim = robot["state"].shape[-1]
             if self.pressure_geometry is None:
                 self.pressure_geometry = geometry
                 self.robot_action_dim = action_dim
                 self.robot_state_dim = state_dim
+                self.sensor_names = spec.sensor_names
+                self.sensor_locations = spec.sensor_locations
             elif geometry != self.pressure_geometry:
                 raise ValueError(
                     f"pressure geometry in episode {index} is {geometry}; expected {self.pressure_geometry} [S,R,C]"
@@ -152,6 +173,8 @@ class PressureNpzDataset:
                 raise ValueError(
                     f"robot state dimension in episode {index} is {state_dim}; expected {self.robot_state_dim}"
                 )
+            elif spec.sensor_names != self.sensor_names or spec.sensor_locations != self.sensor_locations:
+                raise ValueError("all pressure episodes must use the same sensor slot metadata")
             frames = len(robot["timestamps"])
             samples = max(0, frames - self.action_horizon + 1)
             dropped = frames - samples

@@ -89,6 +89,17 @@ python -m venv .venv-integration
 | `taxel_valid` | `[T,S,R,C]`，bool，可选 | 默认有限感测单元有效 |
 | `saturated` | `[T,S,R,C]`，bool，可选 | 默认不饱和；实际设备需提供正确量程判据 |
 
+传感器槽位 `S` 同时支持夹爪和小臂。manifest 的 episode 条目可以补充：
+
+```json
+{
+  "sensor_names": ["left_gripper", "forearm_left"],
+  "sensor_locations": ["gripper_fingertip", "left_forearm"]
+}
+```
+
+两个列表必须与压力数组的传感器轴一一对应，并在同一数据划分内保持一致；它们是数据契约和 checkpoint 可追踪元数据，不会把小臂信号伪装成夹爪信号。训练配置中的 `PressureConfig.num_sensors`、阵列行列和槽位顺序必须与 manifest 一致。只使用夹爪或只使用小臂时，可将 `S` 设为对应数量；混合训练时，对缺失的某个槽位使用 `frame_valid=false` 和 `taxel_valid=false`，不重复旧帧填充。
+
 读取器只选 `采样时刻 <= 决策时刻` 且 `到达时刻 <= 决策时刻` 的最近 K 个不同帧，按旧→新排列。历史不足在左侧补无效帧，记录真实 age，不重复旧帧伪装新观测。各传感器异步时，应在采集适配层保留真实时间/可用性，不人为声称同步。
 
 模型中的独立观测字段为：

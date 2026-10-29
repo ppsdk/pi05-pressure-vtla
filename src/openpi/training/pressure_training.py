@@ -73,7 +73,13 @@ def configure_trainable_parameters(
 
 def _pressure_config(model: torch.nn.Module) -> dict | None:
     config = getattr(getattr(model, "config", None), "pressure", None)
-    return None if config is None else dataclasses.asdict(config)
+    if config is None:
+        return None
+    result = dataclasses.asdict(config)
+    for key in ("sensor_names", "sensor_locations"):
+        if key in result:
+            result[key] = list(result[key])
+    return result
 
 
 def _file_hash(path: str | Path) -> str:
