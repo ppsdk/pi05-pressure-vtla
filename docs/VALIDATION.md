@@ -11,7 +11,7 @@ Date: 2026-10-29. Upstream baseline: `215abfb217dbac7d5f1273282331b9b1866c0479`.
 - Python compilation and `git diff --check`: passed.
 - AST comparison against the upstream commit: `embed_suffix`, `denoise_step`, noise/time sampling, and the flow interpolation/target expressions are unchanged.
 
-Subsequent CPU component validation after the checkpoint and image-resize fixes: `109 passed in 15.61s` locally on Windows. A GitHub-hosted Linux CPU integration run passed the full synthetic-data → real small openpi model → optimizer → final checkpoint → policy inference → resume path. The smoke uses a randomly initialized model and a locally generated test tokenizer; see the CPU integration workflow for the latest result.
+Subsequent CPU component validation after the checkpoint and image-resize fixes: `109 passed in 15.61s` locally on Windows. A GitHub-hosted Linux CPU integration run passed the full synthetic-data → real small openpi model → optimizer → final checkpoint → policy inference → resume path. With fixed action noise, changing valid pressure changed predicted actions; after resuming, pressure-encoder weights changed. The smoke uses a randomly initialized model and a locally generated test tokenizer; see the CPU integration workflow for the latest result.
 
 ## What the tests establish
 
