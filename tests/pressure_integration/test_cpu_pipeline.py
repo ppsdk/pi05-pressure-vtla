@@ -4,12 +4,14 @@ This does not load official weights, use a real sensor, or measure task success.
 It requires the optional CPU integration dependencies and upstream Transformers patch.
 """
 
+import copy
 import dataclasses
 import gc
 import json
 
 import numpy as np
 import pytest
+import safetensors.torch
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("jax")
@@ -139,6 +141,10 @@ def test_synthetic_npz_train_final_checkpoint_resume_and_policy_inference(tmp_pa
     result = policy.infer(sample, noise=np.zeros((2, 4), dtype=np.float32))
     assert result["actions"].shape == (2, 3)
     assert np.isfinite(result["actions"]).all()
+    altered_sample = copy.deepcopy(sample)
+    altered_sample["pressure"]["values"] += 1.0
+    altered = policy.infer(altered_sample, noise=np.zeros((2, 4), dtype=np.float32))
+    assert not np.array_equal(result["actions"], altered["actions"])
     del policy
     gc.collect()
 
@@ -149,4 +155,10 @@ def test_synthetic_npz_train_final_checkpoint_resume_and_policy_inference(tmp_pa
 
     # A resumed third update must use the saved optimizer/model and write step 3.
     train_pytorch.train_loop(dataclasses.replace(cfg, resume=True, num_train_steps=3))
-    assert (cfg.checkpoint_dir / "3" / "model.safetensors").is_file()
+    third = cfg.checkpoint_dir / "3" / "model.safetensors"
+    assert third.is_file()
+    first_weights = safetensors.torch.load_file(first / "model.safetensors")
+    third_weights = safetensors.torch.load_file(third)
+    assert not torch.equal(
+        first_weights["pressure_encoder.patch_in.weight"], third_weights["pressure_encoder.patch_in.weight"]
+    )
