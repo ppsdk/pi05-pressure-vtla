@@ -1,6 +1,6 @@
-# π0.5 压力 VTLA 模型维度流
+# π0.5 原生架构与压力 VTLA 模型维度流
 
-本文对应当前 PyTorch 实现 `src/openpi/models_pytorch/pi0_pytorch.py`、`pressure_pytorch.py` 和 `PressureConfig`。
+本文先说明官方 π0.5 的原生 PyTorch 架构，再说明当前电阻式压力阵列 VTLA 的增量。对应实现为 `src/openpi/models_pytorch/pi0_pytorch.py`、`gemma_pytorch.py`、`pressure_pytorch.py` 和 `PressureConfig`。原生基线仍可在没有压力字段时运行；压力配置只在 PyTorch π0.5 路径启用。
 
 符号：`B` batch；`S` 压力传感器槽位（可混合夹爪/小臂）；`K` 历史帧；`R,C` 阵列行列；`Pr,Pc` patch 行列；`Np=(R/Pr)*(C/Pc)` patch 数；`A=action_dim`；`H=action_horizon`；`L` 实际语言/离散状态 token 数；`Dv` PaliGemma 宽度；`De` ActionExpert 宽度；`Dh` 压力 MLP 隐藏宽度。
 
@@ -17,6 +17,158 @@
 | 压力 MLP `Dh` | 128 | 128 |
 
 debug 配置是随机初始化 CPU 链路测试模型，不能代表官方 π0.5 权重。
+
+## 0. π0.5 原生架构（无压力输入）
+
+π0.5 不是单一宽度的普通语言模型，而是由 PaliGemma 视觉语言主干和一个较窄的 ActionExpert 组成的双专家模型。两者在每层注意力中使用相同的 `num_heads`、`num_kv_heads` 和 `head_dim`，但保持各自的 hidden width；各自投影得到 Q/K/V 后，在注意力序列维拼接，注意力输出再按原序列长度拆回两个专家。
+
+### 0.1 原生配置和输入
+
+官方 π0.5 默认配置为：
+
+| 部分 | 变体 | width | layers | MLP width | query heads | KV heads | head dim |
+|---|---|---:|---:|---:|---:|---:|---:|
+| PaliGemma 语言模型 | `gemma_2b` | 2048 | 18 | 16384 | 8 | 1 | 256 |
+| ActionExpert | `gemma_300m` | 1024 | 18 | 4096 | 8 | 1 | 256 |
+
+π0.5 的原生观测包括三路图像、任务 prompt 和机器人 state。state 不作为连续 suffix token 输入，而是先按归一化范围 `[-1,1]` 离散到 256 个 bin，再与 prompt 拼成 PaliGemma 的语言输入。tokenizer 的逻辑可概括为：
+
+```text
+state                 [B,D_state]
+离散 state             [B,D_state]，每个值 ∈ {0,...,255}
+文本                   "Task: <prompt>, State: <discrete state>;\\nAction: "
+token ids              [B,L]
+token embeddings       [B,L,2048]
+```
+
+以三路 224×224 RGB、每路 256 个 SigLIP patch token 为例：
+
+```text
+base RGB               [B,3,224,224] -> [B,256,2048]
+left wrist RGB         [B,3,224,224] -> [B,256,2048]
+right wrist RGB        [B,3,224,224] -> [B,256,2048]
+三路视觉 tokens                         [B,768,2048]
+语言/离散状态 tokens                    [B,L,2048]
+原生 prefix                             [B,P0,2048]
+P0 = 768 + L
+```
+
+缺失相机通过 `image_mask=False` 保留槽位。它仍占据预处理产生的 token 槽位，但在 padding mask 中失效；实际有效 prefix 长度由有效 mask 决定。
+
+### 0.2 原生 prefix 和 action suffix
+
+原生 π0.5 的序列分成两个逻辑部分：
+
+```text
+prefix = [视觉 tokens, 语言/离散状态 tokens]
+suffix = [动作 chunk tokens]
+```
+
+训练时给动作标签 `a` 加入 flow matching 噪声 `ε`：
+
+```text
+actions a             [B,H,32]
+noise ε               [B,H,32]
+t                     [B]，Beta(1.5, 1.0) 后缩放到约 (0,1)
+x_t                   [B,H,32] = t*ε + (1-t)*a
+u_t                   [B,H,32] = ε - a
+```
+
+动作 suffix 的输入和时间条件为：
+
+```text
+x_t                   [B,H,32]
+action_in_proj        [B,H,32] -> [B,H,1024]
+time sinusoid          [B,1024]
+time MLP               [B,1024] -> [B,1024]
+adaRMSNorm condition   [B,1024]
+suffix embeddings      [B,H,1024]
+```
+
+π0.5 的 `H=50`、`action_dim=32` 是默认模型契约；实际机器人动作维度可以小于 32，由输入/输出适配器补零或裁剪。
+
+### 0.3 原生 attention mask 和联合前向
+
+原生 mask 不是把动作 chunk 当作逐 token 文本解码。用 `ar_mask` 表示注意力块边界时：
+
+```text
+prefix ar_mask       [0, 0, ..., 0]
+suffix ar_mask       [1, 0, ..., 0]
+```
+
+由此得到以下可见性：
+
+| 查询 token | 可以读取 |
+|---|---|
+| prefix | 所有有效 prefix token，不能读取 suffix |
+| suffix 第一个 token | 所有有效 prefix 和整个 suffix chunk |
+| suffix 后续 token | 所有有效 prefix 和整个 suffix chunk |
+
+因此动作 chunk 是联合建模的，动作 token 之间可以互相注意；这与自回归文本生成的逐 token causal mask 不同。训练时，`prefix` 和 `suffix` 一次联合前向：
+
+```text
+prefix                 [B,P0,2048]
+suffix                 [B,H,1024]
+拼接后的逻辑长度       N0 = P0 + H
+attention mask         [B,N0,N0]（再扩为 [B,1,N0,N0]）
+position ids           [B,N0]
+ActionExpert 输出      [B,H,1024]
+action_out_proj        [B,H,1024] -> [B,H,32]
+v_t                    [B,H,32]
+loss                   mean((v_t-u_t)^2)
+```
+
+### 0.4 原生推理和 prefix KV cache
+
+动作推理时，π0.5 不生成文本 token，而是先对当前观测的 prefix 做一次 prefill：
+
+```python
+PaliGemma(prefix, use_cache=True) -> past_key_values
+```
+
+每个 PaliGemma 层的缓存可抽象为：
+
+```text
+K_prefix[l], V_prefix[l]  [B,1,P0,256]
+```
+
+随后进行 `num_steps` 次 Euler flow matching 去噪。每次只重新构造动作 suffix：
+
+```text
+ActionExpert(suffix, past_key_values=prefix_cache, use_cache=False)
+    -> v_t [B,H,32]
+x_t <- x_t + dt*v_t
+```
+
+在注意力层内部，ActionExpert 当前动作 token 的 K/V 与缓存的 prefix K/V 按序列维拼接：
+
+```text
+K = concat(K_prefix, K_suffix)
+V = concat(V_prefix, V_suffix)
+Q = Q_suffix
+attention(Q, K, V)
+```
+
+这里的 `past_key_values` 特指 PaliGemma **语言 Transformer** 的缓存。SigLIP 视觉塔先把 RGB 变为视觉 embedding；视觉塔本身不通过这份 `past_key_values` 做逐 patch 解码。视觉 embedding 和语言 embedding 一起作为语言 Transformer 的 prefix 输入，因此这些视觉 token 仍会在语言 Transformer 的 K/V 中留下对应位置。
+
+所以原生 π0.5 的 cache 是观测 prefix 的 KV cache：PaliGemma 语言 Transformer 负责填充，ActionExpert 在每个去噪步读取。训练阶段 `use_cache=False`；新的图像、语言或 state 到来时，必须重新建立 prefix cache。
+
+### 0.5 原生数据流数值例子
+
+取 `B=2`、`L=120`、`H=50`、`A=32`：
+
+```text
+视觉 tokens             [2,768,2048]
+语言/离散状态 tokens     [2,120,2048]
+原生 prefix             [2,888,2048]
+动作噪声 x_t             [2,50,32]
+ActionExpert suffix      [2,50,1024]
+联合逻辑长度             888 + 50 = 938
+Flow 输出 v_t             [2,50,32]
+最终动作 chunk            [2,50,32]
+```
+
+压力 VTLA 只在这个原生 prefix 后追加压力 tokens；它不改变 ActionExpert 的 `1024` 宽度、动作维度 `32`、动作 horizon `50` 或 Flow Matching 目标。
 
 ## 1. 数据输入
 

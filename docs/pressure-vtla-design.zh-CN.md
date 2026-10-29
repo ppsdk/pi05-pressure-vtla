@@ -4,6 +4,39 @@
 
 **交付状态：已基于官方 openpi 实现 PyTorch 压力阵列接入，CPU 组件测试 109 项通过；另已通过合成数据和随机初始化小模型的真实模块集成测试。未加载完整 π0.5 权重或运行完整模型训练。** 源码与运行说明见 [中文使用说明](../README_VTLA.zh-CN.md)。触觉为电阻式压力阵列，非视触觉，本机仅 CPU。阵列数量、分辨率、读数格式、标定、机器人和频率仍待绑定。下文的 token 数与训练阶段是建议值，不是任务效果结论。缓存数值一致性使用调用真实模型方法的小型替身主干测试，未验证完整官方主干的数值一致性。
 
+## 0. π0.5 原生基线：改造前必须保留的计算图
+
+压力分支建立在 π0.5 的原生双专家结构上。原生模型由 `gemma_2b` 配置的 PaliGemma 语言/视觉主干（width 2048）和 `gemma_300m` 配置的 ActionExpert（width 1024）组成；两者共享每层注意力所需的 `num_heads=8`、`num_kv_heads=1`、`head_dim=256`，但不共享 hidden width 或参数。
+
+原生数据流是：
+
+```text
+三路 RGB → SigLIP → 视觉 tokens [B,768,2048]
+prompt + 离散 state → PaliGemma tokenizer → 语言 tokens [B,L,2048]
+prefix = [视觉, 语言/离散 state] → PaliGemma
+
+动作标签 a、噪声 ε、时间 t
+    → x_t = t*ε + (1-t)*a
+    → action_in_proj(32→1024)
+    → ActionExpert + adaRMSNorm(time)
+    → action_out_proj(1024→32)
+    → flow velocity v_t
+```
+
+π0.5 的 state 处理是它与 π0 的关键差异：state 先在 `[-1,1]` 范围离散为 256 个 bin，并以文本数字串加入 prompt；它不是 π0 路线中的连续 state suffix token。因此压力阵列应作为独立 prefix 模态追加，不能把压力值塞入 state 文本，也不能照搬 π0 的连续 state suffix 设计。
+
+训练时 prefix 和 action suffix 一次联合前向，`use_cache=False`。动作推理时先对完整 prefix 做一次 PaliGemma prefill，得到每层 `past_key_values`；随后每个 Euler 去噪步将当前动作 suffix 的 K/V 与 prefix K/V 拼接，ActionExpert 用动作 Q 读取二者：
+
+```text
+PaliGemma(prefix, use_cache=True) → prefix KV cache
+ActionExpert(suffix, past_key_values=prefix KV, use_cache=False)
+    → K = [K_prefix, K_suffix]
+      V = [V_prefix, V_suffix]
+      Q = Q_suffix
+```
+
+这不是文本自回归解码：π0.5 不在动作路径中逐 token 生成语言。PaliGemma 负责建立观测 prefix cache，ActionExpert 在每个 flow step 读取；新的图像、语言、state 或压力观测到来后重新建立 cache。原生维度、mask 和数值例子见 [`docs/model-dimensions.zh-CN.md`](model-dimensions.zh-CN.md) 第 0 节。
+
 ## 1. 改造边界与选型
 
 推荐主线：原始阵列读数经标定/固定尺度归一化，进入轻量空间/时间触觉编码器，再将定长触觉 token 加入 PaliGemma 观测前缀，利用原前缀的双向注意力完成视觉、语言、状态和触觉的融合。视觉继续走原 SigLIP；压力阵列不走图像编码器。动作后缀继续由原 ActionExpert 处理。
