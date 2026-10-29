@@ -141,8 +141,9 @@ def preprocess_observation_pytorch(
             # Back to [-1, 1]
             image = image * 2.0 - 1.0
 
-        # Convert back to [B, C, H, W] format if it was originally channels-first
-        if is_channels_first:
+        # Pressure datasets may supply float32 HWC frames; SigLIP requires NCHW.
+        # Preserve the original non-pressure path.
+        if is_channels_first or getattr(observation, "pressure", None) is not None:
             image = image.permute(0, 3, 1, 2)  # [B, H, W, C] -> [B, C, H, W]
 
         out_images[key] = image
@@ -170,4 +171,5 @@ def preprocess_observation_pytorch(
         tokenized_prompt_mask=observation.tokenized_prompt_mask,
         token_ar_mask=observation.token_ar_mask,
         token_loss_mask=observation.token_loss_mask,
+        pressure=getattr(observation, "pressure", None),
     )

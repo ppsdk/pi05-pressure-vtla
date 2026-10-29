@@ -45,6 +45,7 @@ import openpi.models_pytorch.pi0_pytorch
 import openpi.shared.normalize as _normalize
 import openpi.training.config as _config
 import openpi.training.data_loader as _data
+import openpi.training.pressure_training as _pressure_training
 
 
 def init_logging():
@@ -177,6 +178,13 @@ def save_checkpoint(model, optimizer, global_step, config, is_main, data_config)
         }
         torch.save(metadata, tmp_ckpt_dir / "metadata.pt")
 
+        _pressure_training.save_pressure_metadata(
+            model_to_save,
+            tmp_ckpt_dir,
+            freeze_backbone=config.pressure_freeze_backbone,
+            stats_path=getattr(data_config, "pressure_stats_path", None),
+        )
+
         # save norm stats
         norm_stats = data_config.norm_stats
         if norm_stats is not None and data_config.asset_id is not None:
@@ -194,7 +202,7 @@ def save_checkpoint(model, optimizer, global_step, config, is_main, data_config)
             wandb.log({"checkpoint_step": global_step}, step=global_step)
 
 
-def load_checkpoint(model, optimizer, checkpoint_dir, device):
+def load_checkpoint(model, optimizer, checkpoint_dir, device, *, config=None, data_config=None):
     """Load the latest checkpoint and return the global step."""
     checkpoint_steps = [
         int(d.name)
@@ -207,6 +215,14 @@ def load_checkpoint(model, optimizer, checkpoint_dir, device):
 
     latest_step = max(checkpoint_steps)
     ckpt_dir = checkpoint_dir / f"{latest_step}"
+
+    model_to_load = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
+    _pressure_training.validate_pressure_metadata(
+        model_to_load,
+        ckpt_dir,
+        freeze_backbone=getattr(config, "pressure_freeze_backbone", False),
+        stats_path=getattr(data_config, "pressure_stats_path", None),
+    )
 
     # Clear memory before loading checkpoints
     if torch.cuda.is_available():
@@ -400,6 +416,7 @@ def train_loop(config: _config.TrainConfig):
             paligemma_variant=getattr(config.model, "paligemma_variant", "gemma_2b"),
             action_expert_variant=getattr(config.model, "action_expert_variant", "gemma_300m"),
             pi05=getattr(config.model, "pi05", False),
+            pressure=getattr(config.model, "pressure", None),
         )
     else:
         model_cfg = config.model
@@ -407,6 +424,9 @@ def train_loop(config: _config.TrainConfig):
         object.__setattr__(model_cfg, "dtype", config.pytorch_training_precision)
 
     model = openpi.models_pytorch.pi0_pytorch.PI0Pytorch(model_cfg).to(device)
+    trainable_parameters = _pressure_training.configure_trainable_parameters(
+        model, freeze_backbone=config.pressure_freeze_backbone
+    )
 
     if hasattr(model, "gradient_checkpointing_enable"):
         enable_gradient_checkpointing = True
@@ -439,12 +459,14 @@ def train_loop(config: _config.TrainConfig):
         )
 
     # Load weights from weight_loader if specified (for fine-tuning)
-    if config.pytorch_weight_path is not None:
+    if config.pytorch_weight_path is not None and not resuming:
         logging.info(f"Loading weights from: {config.pytorch_weight_path}")
 
         model_path = os.path.join(config.pytorch_weight_path, "model.safetensors")
-        safetensors.torch.load_model(
-            (model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model), model_path
+        _pressure_training.load_base_weights(
+            (model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model),
+            model_path,
+            allow_pressure_init=model_cfg.pressure is not None,
         )
         logging.info(f"Loaded PyTorch weights from {config.pytorch_weight_path}")
 
@@ -456,7 +478,7 @@ def train_loop(config: _config.TrainConfig):
 
     # Create optimizer with config parameters
     optim = torch.optim.AdamW(
-        model.parameters(),
+        trainable_parameters,
         lr=peak_lr,
         betas=(config.optimizer.b1, config.optimizer.b2),
         eps=config.optimizer.eps,
@@ -466,7 +488,9 @@ def train_loop(config: _config.TrainConfig):
     # Load checkpoint if resuming
     global_step = 0
     if resuming:
-        global_step = load_checkpoint(model, optim, config.checkpoint_dir, device)
+        global_step = load_checkpoint(
+            model, optim, config.checkpoint_dir, device, config=config, data_config=data_config
+        )
         logging.info(f"Resumed training from step {global_step}")
 
     def lr_schedule(step: int):
@@ -543,7 +567,9 @@ def train_loop(config: _config.TrainConfig):
                 log_memory_usage(device, global_step, "after_backward")
 
             # Gradient clipping
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.optimizer.clip_gradient_norm)
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                trainable_parameters, max_norm=config.optimizer.clip_gradient_norm
+            )
 
             # Optimizer step
             optim.step()

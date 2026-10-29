@@ -1,0 +1,5 @@
+# Component tests only; does not install the complete openpi training stack.
+numpy==1.26.4
+torch==2.7.1
+safetensors>=0.5,<0.9
+pytest>=8.3,<10

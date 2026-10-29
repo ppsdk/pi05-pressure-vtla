@@ -64,6 +64,13 @@ IMAGE_RESOLUTION = (224, 224)
 #         ...  # Masks for additional views
 #     },
 #     "state": float32[*b, s],  # Low-dimensional robot state
+#     "pressure": {  # Optional resistive-array signal, separate from state/actions.
+#         "values": float32[*b, sensors, history, rows, cols],
+#         "frame_valid": bool[*b, sensors, history],
+#         "taxel_valid": bool[*b, sensors, history, rows, cols],
+#         "saturated": bool[*b, sensors, history, rows, cols],
+#         "age": float32[*b, sensors, history],  # Seconds before the decision.
+#     },
 #     "tokenized_prompt": int32[*b, l],  # Optional, tokenized language prompt
 #     "tokenized_prompt_mask": bool[*b, l],  # Optional, mask for tokenized prompt
 #     "token_ar_mask": int32[*b, l],  # Optional, autoregressive mask for FAST model
@@ -106,6 +113,9 @@ class Observation(Generic[ArrayT]):
     # Token loss mask (for FAST autoregressive model).
     token_loss_mask: at.Bool[ArrayT, "*b l"] | None = None
 
+    # Resistive-array signals and quality metadata. They do not enter state tokenization.
+    pressure: dict[str, ArrayT] | None = None
+
     @classmethod
     def from_dict(cls, data: at.PyTree[ArrayT]) -> "Observation[ArrayT]":
         """This method defines the mapping between unstructured data (i.e., nested dict) to the structured Observation format."""
@@ -126,6 +136,7 @@ class Observation(Generic[ArrayT]):
             tokenized_prompt_mask=data.get("tokenized_prompt_mask"),
             token_ar_mask=data.get("token_ar_mask"),
             token_loss_mask=data.get("token_loss_mask"),
+            pressure=data.get("pressure"),
         )
 
     def to_dict(self) -> at.PyTree[ArrayT]:
@@ -205,6 +216,7 @@ def preprocess_observation(
         tokenized_prompt_mask=observation.tokenized_prompt_mask,
         token_ar_mask=observation.token_ar_mask,
         token_loss_mask=observation.token_loss_mask,
+        pressure=observation.pressure,
     )
 
 

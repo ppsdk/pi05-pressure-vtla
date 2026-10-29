@@ -16,10 +16,13 @@ import tyro
 import openpi.models.model as _model
 import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
+from openpi.models.pressure_config import PressureConfig
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
+from openpi.pressure_data import NormalizePressure
+from openpi.pressure_data import TrimPressureActions
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
@@ -89,6 +92,10 @@ class DataConfig:
 
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
+    # Optional local episode manifest for numeric pressure-array training.
+    pressure_manifest: str | None = None
+    pressure_stats_path: str | None = None
+    robot_action_dim: int | None = None
 
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
@@ -207,6 +214,37 @@ class FakeDataConfig(DataConfigFactory):
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         return DataConfig(repo_id=self.repo_id)
+
+
+@dataclasses.dataclass(frozen=True)
+class PressureNpzDataConfig(DataConfigFactory):
+    """Canonical robot NPZ + resistive-array NPZ episodes; no assumed robot action semantics."""
+
+    repo_id: str = "pressure_npz"
+    manifest_path: str = ""
+    pressure_stats_path: str = ""
+    robot_action_dim: int = 0
+    default_prompt: str | None = None
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        if getattr(model_config, "pressure", None) is None:
+            raise ValueError("PressureNpzDataConfig requires a pressure-enabled model")
+        if not self.manifest_path or not self.pressure_stats_path:
+            raise ValueError("Set manifest_path and pressure_stats_path to real training data/assets")
+        if not 0 < self.robot_action_dim <= model_config.action_dim:
+            raise ValueError("Set robot_action_dim to the real robot's dimension (at most model.action_dim)")
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            pressure_manifest=self.manifest_path,
+            pressure_stats_path=self.pressure_stats_path,
+            robot_action_dim=self.robot_action_dim,
+            data_transforms=_transforms.Group(
+                inputs=[NormalizePressure.from_npz(self.pressure_stats_path)],
+                outputs=[TrimPressureActions(self.robot_action_dim)],
+            ),
+            model_transforms=ModelTransformFactory(self.default_prompt)(model_config),
+        )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -484,6 +522,8 @@ class TrainConfig:
 
     # Precision for PyTorch training.
     pytorch_training_precision: Literal["bfloat16", "float32"] = "bfloat16"
+    # Freeze old VLM parameters while keeping the action expert and pressure branch trainable.
+    pressure_freeze_backbone: bool = False
 
     lr_schedule: _optimizer.LRScheduleConfig = dataclasses.field(default_factory=_optimizer.CosineDecaySchedule)
     optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)
@@ -554,10 +594,44 @@ class TrainConfig:
     def __post_init__(self) -> None:
         if self.resume and self.overwrite:
             raise ValueError("Cannot resume and overwrite at the same time.")
+        if self.pressure_freeze_backbone and getattr(self.model, "pressure", None) is None:
+            raise ValueError("pressure_freeze_backbone requires a pressure-enabled model")
 
 
 # Use `get_config` if you need to get a config by name in your code.
 _CONFIGS = [
+    # Hardware and file paths are example placeholders; replace before real training.
+    TrainConfig(
+        name="pi05_pressure",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            pressure=PressureConfig(num_sensors=2, rows=8, cols=8),
+            pytorch_compile_mode=None,
+        ),
+        data=PressureNpzDataConfig(),
+        pytorch_training_precision="float32",
+        pressure_freeze_backbone=True,
+        batch_size=1,
+        num_workers=0,
+        wandb_enabled=False,
+    ),
+    # Shape example only, NOT a claim about the user's hardware or a training recipe.
+    # Override the layout before real data; CPU component smoke tests live in tests/vtla.
+    TrainConfig(
+        name="pi05_pressure_debug",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            pressure=PressureConfig(num_sensors=2, rows=8, cols=8),
+            pytorch_compile_mode=None,
+        ),
+        data=FakeDataConfig(),
+        pytorch_training_precision="float32",
+        pressure_freeze_backbone=True,
+        batch_size=1,
+        num_workers=0,
+        num_train_steps=10,
+        wandb_enabled=False,
+    ),
     #
     # Inference Aloha configs.
     #

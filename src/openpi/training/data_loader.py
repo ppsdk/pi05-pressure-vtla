@@ -14,6 +14,7 @@ import torch
 import openpi.models.model as _model
 import openpi.training.config as _config
 from openpi.training.droid_rlds_dataset import DroidRldsDataset
+from openpi.training.pressure_dataset import PressureNpzDataset
 import openpi.transforms as _transforms
 
 T_co = TypeVar("T_co", covariant=True)
@@ -116,6 +117,17 @@ class FakeDataset(Dataset):
             return jnp.zeros(shape=shape, dtype=spec.dtype)
 
         observation = jax.tree.map(make_from_spec, self._observation_spec)
+        if observation.pressure is not None:
+            # Fake pressure should exercise the branch, not silently mask every token.
+            pressure = observation.pressure
+            observation = observation.replace(
+                pressure={
+                    **pressure,
+                    "frame_valid": jnp.ones_like(pressure["frame_valid"]),
+                    "taxel_valid": jnp.ones_like(pressure["taxel_valid"]),
+                    "age": jnp.zeros_like(pressure["age"]),
+                }
+            )
         action = jax.tree.map(make_from_spec, self._action_spec)
 
         return {
@@ -131,6 +143,29 @@ def create_torch_dataset(
     data_config: _config.DataConfig, action_horizon: int, model_config: _model.BaseModelConfig
 ) -> Dataset:
     """Create a dataset for training."""
+    if data_config.pressure_manifest is not None:
+        pressure_config = getattr(model_config, "pressure", None)
+        if pressure_config is None:
+            raise ValueError("Pressure dataset requires a pressure-enabled model")
+        dataset = PressureNpzDataset(
+            data_config.pressure_manifest,
+            pressure_config.history,
+            action_horizon,
+            max_age=pressure_config.max_age_seconds,
+        )
+        if not len(dataset):
+            raise ValueError("No complete action chunks in the pressure manifest; check horizon and episode lengths")
+        expected = (pressure_config.num_sensors, pressure_config.history, pressure_config.rows, pressure_config.cols)
+        if (*dataset.pressure_geometry[:1], pressure_config.history, *dataset.pressure_geometry[1:]) != expected:
+            raise ValueError(f"Pressure manifest geometry does not match model config {expected}")
+        if dataset.robot_action_dim != data_config.robot_action_dim:
+            raise ValueError("Robot action dimension in the manifest differs from configured robot_action_dim")
+        logging.info(
+            "Pressure episodes: %s; dropped incomplete action tails: %s",
+            dataset.episode_summaries,
+            dataset.dropped_tail_samples,
+        )
+        return dataset
     repo_id = data_config.repo_id
     if repo_id is None:
         raise ValueError("Repo ID is not set. Cannot create dataset.")

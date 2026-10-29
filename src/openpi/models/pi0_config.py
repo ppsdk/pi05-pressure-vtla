@@ -8,6 +8,7 @@ from typing_extensions import override
 
 from openpi.models import model as _model
 import openpi.models.gemma as _gemma
+from openpi.models.pressure_config import PressureConfig
 from openpi.shared import array_typing as at
 import openpi.shared.nnx_utils as nnx_utils
 
@@ -33,8 +34,12 @@ class Pi0Config(_model.BaseModelConfig):
     discrete_state_input: bool = None  # type: ignore
 
     pytorch_compile_mode: str | None = "max-autotune"
+    # Optional numeric pressure-array prefix. Currently supported by PyTorch only.
+    pressure: PressureConfig | None = None
 
     def __post_init__(self):
+        if self.pressure is not None and not self.pi05:
+            raise ValueError("The pressure prefix currently requires pi05=True")
         if self.max_token_len is None:
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)
         if self.discrete_state_input is None:
@@ -56,7 +61,9 @@ class Pi0Config(_model.BaseModelConfig):
 
     @override
     def create(self, rng: at.KeyArrayLike) -> "Pi0":
-        from openpi.models.pi0 import Pi0
+        if self.pressure is not None:
+            raise NotImplementedError("Pressure VTLA is implemented for PyTorch; use scripts/train_pytorch.py")
+        from openpi.models.pi0 import Pi0  # noqa: PLC0415 - avoid circular model/config imports
 
         return Pi0(self, rngs=nnx.Rngs(rng))
 
@@ -64,6 +71,18 @@ class Pi0Config(_model.BaseModelConfig):
     def inputs_spec(self, *, batch_size: int = 1) -> tuple[_model.Observation, _model.Actions]:
         image_spec = jax.ShapeDtypeStruct([batch_size, *_model.IMAGE_RESOLUTION, 3], jnp.float32)
         image_mask_spec = jax.ShapeDtypeStruct([batch_size], jnp.bool_)
+        pressure_spec = None
+        if self.pressure is not None:
+            cfg = self.pressure
+            frame_shape = [batch_size, cfg.num_sensors, cfg.history]
+            taxel_shape = [*frame_shape, cfg.rows, cfg.cols]
+            pressure_spec = {
+                "values": jax.ShapeDtypeStruct(taxel_shape, jnp.float32),
+                "frame_valid": jax.ShapeDtypeStruct(frame_shape, jnp.bool_),
+                "taxel_valid": jax.ShapeDtypeStruct(taxel_shape, jnp.bool_),
+                "saturated": jax.ShapeDtypeStruct(taxel_shape, jnp.bool_),
+                "age": jax.ShapeDtypeStruct(frame_shape, jnp.float32),
+            }
 
         with at.disable_typechecking():
             observation_spec = _model.Observation(
@@ -80,6 +99,7 @@ class Pi0Config(_model.BaseModelConfig):
                 state=jax.ShapeDtypeStruct([batch_size, self.action_dim], jnp.float32),
                 tokenized_prompt=jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.int32),
                 tokenized_prompt_mask=jax.ShapeDtypeStruct([batch_size, self.max_token_len], bool),
+                pressure=pressure_spec,
             )
         action_spec = jax.ShapeDtypeStruct([batch_size, self.action_horizon, self.action_dim], jnp.float32)
 

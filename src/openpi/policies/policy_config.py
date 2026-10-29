@@ -1,15 +1,18 @@
+import dataclasses
 import logging
 import os
 import pathlib
 from typing import Any
 
 import jax.numpy as jnp
+import torch
 
 import openpi.models.model as _model
 import openpi.policies.policy as _policy
 import openpi.shared.download as download
 from openpi.training import checkpoints as _checkpoints
 from openpi.training import config as _config
+from openpi.training.pressure_training import validate_pressure_metadata
 import openpi.transforms as transforms
 
 
@@ -44,15 +47,41 @@ def create_trained_policy(
     """
     repack_transforms = repack_transforms or transforms.Group()
     checkpoint_dir = download.maybe_download(str(checkpoint_dir))
+    if getattr(train_config.model, "pressure", None) is not None:
+        # Use checkpoint pressure scales at deployment, not a mutable training file.
+        stats_path = pathlib.Path(checkpoint_dir) / "assets" / "pressure_stats.npz"
+        if not stats_path.exists():
+            raise FileNotFoundError(f"Pressure checkpoint is missing its normalization asset: {stats_path}")
+        if not isinstance(train_config.data, _config.PressureNpzDataConfig):
+            raise ValueError("Pressure deployment currently requires PressureNpzDataConfig")
+        train_config = dataclasses.replace(
+            train_config, data=dataclasses.replace(train_config.data, pressure_stats_path=str(stats_path))
+        )
 
     # Check if this is a PyTorch model by looking for model.safetensors
     weight_path = os.path.join(checkpoint_dir, "model.safetensors")
     is_pytorch = os.path.exists(weight_path)
+    if is_pytorch and pytorch_device is None:
+        pytorch_device = "cuda" if torch.cuda.is_available() else "cpu"
+    if getattr(train_config.model, "pressure", None) is not None and pytorch_device == "cpu":
+        train_config = dataclasses.replace(
+            train_config, model=dataclasses.replace(train_config.model, dtype="float32", pytorch_compile_mode=None)
+        )
 
     logging.info("Loading model...")
     if is_pytorch:
         model = train_config.model.load_pytorch(train_config, weight_path)
-        model.paligemma_with_expert.to_bfloat16_for_selected_params("bfloat16")
+        precision = (
+            train_config.model.dtype if getattr(train_config.model, "pressure", None) is not None else "bfloat16"
+        )
+        model.paligemma_with_expert.to_bfloat16_for_selected_params(precision)
+        if getattr(train_config.model, "pressure", None) is not None:
+            validate_pressure_metadata(
+                model,
+                checkpoint_dir,
+                freeze_backbone=train_config.pressure_freeze_backbone,
+                stats_path=stats_path,
+            )
     else:
         model = train_config.model.load(_model.restore_params(checkpoint_dir / "params", dtype=jnp.bfloat16))
     data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
@@ -62,15 +91,6 @@ def create_trained_policy(
         if data_config.asset_id is None:
             raise ValueError("Asset id is required to load norm stats.")
         norm_stats = _checkpoints.load_norm_stats(checkpoint_dir / "assets", data_config.asset_id)
-
-    # Determine the device to use for PyTorch models
-    if is_pytorch and pytorch_device is None:
-        try:
-            import torch
-
-            pytorch_device = "cuda" if torch.cuda.is_available() else "cpu"
-        except ImportError:
-            pytorch_device = "cpu"
 
     return _policy.Policy(
         model,

@@ -3,6 +3,9 @@ assets/
 checkpoints/
 data/
 wandb/
+.venv-pressure/
+*.safetensors
+*.ckpt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
