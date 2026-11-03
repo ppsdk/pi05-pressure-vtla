@@ -1,0 +1,19 @@
+{
+  "num_sensors": 1,
+  "rows": 4,
+  "cols": 4,
+  "sensor_names": ["forearm_skin"],
+  "sensor_locations": ["forearm"],
+  "history": 4,
+  "patch_rows": 1,
+  "patch_cols": 1,
+  "hidden_dim": 128,
+  "max_age_seconds": null,
+  "signal_type": "raw",
+  "signal_unit": "raw",
+  "sample_period_seconds": null,
+  "taxel_positions_mm": [],
+  "coordinate_scale_mm": 100.0,
+  "use_temporal_differences": true,
+  "max_difference_gap_seconds": null
+}

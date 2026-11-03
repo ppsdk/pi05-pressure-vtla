@@ -34,7 +34,8 @@ class PressureEncoder(nn.Module):
         patch_area = config.patch_rows * config.patch_cols
 
         # Preserve pressure magnitude, availability, and saturation as separate features.
-        self.patch_in = nn.Linear(3 * patch_area, config.hidden_dim)
+        feature_channels = 5 if config.use_temporal_differences else 3
+        self.patch_in = nn.Linear(feature_channels * patch_area, config.hidden_dim)
         self.patch_out = nn.Linear(config.hidden_dim, output_dim)
         self.sensor_embedding = nn.Embedding(config.num_sensors, output_dim)
         self.spatial_embedding = nn.Embedding(self.num_patches, output_dim)
@@ -42,6 +43,20 @@ class PressureEncoder(nn.Module):
         self.age_out = nn.Linear(config.hidden_dim, output_dim)
         nn.init.normal_(self.sensor_embedding.weight, std=0.02)
         nn.init.normal_(self.spatial_embedding.weight, std=0.02)
+        if config.taxel_positions_mm:
+            # Geometry is reconstructed from the checked configuration, not a mutable checkpoint tensor.
+            coordinates = (
+                torch.tensor(config.taxel_positions_mm, dtype=torch.float32).reshape(
+                    1, config.num_sensors, 1, config.rows, config.cols, 3
+                )
+                / config.coordinate_scale_mm
+            )
+            patch_coordinates = torch.stack(
+                [self._patchify(coordinates[..., axis]) for axis in range(3)], dim=-1
+            ).flatten(start_dim=-2)
+            self.register_buffer("patch_coordinates", patch_coordinates, persistent=False)
+            self.coordinate_in = nn.Linear(3 * patch_area, config.hidden_dim)
+            self.coordinate_out = nn.Linear(config.hidden_dim, output_dim)
 
     @staticmethod
     def _linear_float32(layer: nn.Linear, inputs: torch.Tensor) -> torch.Tensor:
@@ -121,11 +136,37 @@ class PressureEncoder(nn.Module):
             patch_valid = self._patchify(taxel_valid)
             patch_saturated = self._patchify(saturated)
             token_valid = patch_valid.any(dim=-1)
-            patch_features = torch.stack((patch_values, patch_valid.float(), patch_saturated.float()), dim=-1).flatten(
-                start_dim=-2
-            )
+            features = [patch_values, patch_valid.float(), patch_saturated.float()]
+            if self.config.use_temporal_differences:
+                # Values are oldest -> newest; actual age must strictly decrease for a usable pair.
+                safe_pair_age = torch.where(frame_valid, age, 0.0)
+                gap = safe_pair_age[..., :-1] - safe_pair_age[..., 1:]
+                pair_time_valid = torch.isfinite(gap) & (gap > 0)
+                if self.config.max_difference_gap_seconds is not None:
+                    pair_time_valid &= gap <= self.config.max_difference_gap_seconds
+                pair_valid = (
+                    taxel_valid[:, :, 1:]
+                    & taxel_valid[:, :, :-1]
+                    & ~saturated[:, :, 1:]
+                    & ~saturated[:, :, :-1]
+                    & pair_time_valid[..., None, None]
+                )
+                # Sanitize both endpoints before subtraction; masked overflow/NaN cannot enter the MLP.
+                current = torch.where(pair_valid, values[:, :, 1:], 0.0)
+                previous = torch.where(pair_valid, values[:, :, :-1], 0.0)
+                delta = current - previous
+                pair_valid = pair_valid & torch.isfinite(delta)
+                differences = torch.cat(
+                    (torch.zeros_like(values[:, :, :1]), torch.where(pair_valid, delta, 0.0)), dim=2
+                )
+                difference_valid = torch.cat((torch.zeros_like(taxel_valid[:, :, :1]), pair_valid), dim=2)
+                features.extend((self._patchify(differences), self._patchify(difference_valid).float()))
+            patch_features = torch.stack(features, dim=-1).flatten(start_dim=-2)
             tokens = self._linear_float32(self.patch_in, patch_features)
             tokens = self._linear_float32(self.patch_out, F.silu(tokens))
+            if self.config.taxel_positions_mm:
+                coordinates = self._linear_float32(self.coordinate_in, self.patch_coordinates)
+                tokens = tokens + self._linear_float32(self.coordinate_out, F.silu(coordinates))
 
             # log1p preserves real age ordering and keeps very large finite ages numerically bounded.
             safe_age = torch.where(frame_valid, age, 0.0)

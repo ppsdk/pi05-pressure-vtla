@@ -1,6 +1,6 @@
 # π0.5 Pressure VTLA
 
-基于官方 [openpi](https://github.com/Physical-Intelligence/openpi) 的电阻式压力阵列触觉扩展，采用 **PyTorch**。压力 token 在输入前缀中与视觉、语言和机器人状态融合，保留原 ActionExpert 与 Flow Matching 动作生成结构。
+基于官方 [openpi](https://github.com/Physical-Intelligence/openpi) 的数值压力/触觉阵列扩展，采用 **PyTorch**。压力 token 在输入前缀中与视觉、语言和机器人状态融合，保留原 ActionExpert 与 Flow Matching 动作生成结构。
 
 这是工程实现首版。**CPU 组件测试已通过；尚未加载完整 π0.5 权重、运行完整模型训练或验证真实机器人效果。**
 
@@ -14,12 +14,14 @@
 
 ## 架构
 
-1. 原始 ADC/电阻或已标定信号使用固定统计缩放，保留有效性、坏点、饱和及实际采样年龄。
+1. 原始电容/ADC/电阻或已标定信号使用固定统计缩放，保留有效性、坏点、饱和及实际采样年龄。
 2. 局部 patch MLP 编码阵列，加入传感器、空间和时间标签，映射到 PaliGemma 前缀宽度。
 3. 前缀顺序为 `[视觉 tokens, 语言与离散状态 tokens, 压力 tokens]`，有效 token 双向融合。
 4. 沿用原 mask/位置编号和缓存推理；动作后缀、时间条件与 Flow Matching 目标保留。
 
 阵列数量、行列数、历史窗口和 patch 大小通过 `PressureConfig` 配置。仓库中的示例尺寸不代表实际设备。数据层不伪造 ADC/电阻到物理压力或接触力的标定。
+
+小臂安装配置使用 `pi05_pressure_forearm`，可通过 `--pressure-config-path examples/pressure/forearm.json` 配置布局、历史、信号单位，以及可选物理坐标和历史差分。示例几何不代表真实设备，详见中文说明。
 
 ## CPU 快速验证
 

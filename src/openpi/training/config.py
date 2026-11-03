@@ -17,6 +17,7 @@ import openpi.models.model as _model
 import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
 from openpi.models.pressure_config import PressureConfig
+from openpi.models.pressure_config import resolve_pressure_config
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
@@ -545,6 +546,8 @@ class TrainConfig:
     pytorch_training_precision: Literal["bfloat16", "float32"] = "bfloat16"
     # Freeze old VLM parameters while keeping the action expert and pressure branch trainable.
     pressure_freeze_backbone: bool = False
+    # Consumed at construction; the resolved model config is the deployment contract.
+    pressure_config_path: str | None = None
 
     lr_schedule: _optimizer.LRScheduleConfig = dataclasses.field(default_factory=_optimizer.CosineDecaySchedule)
     optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)
@@ -613,6 +616,9 @@ class TrainConfig:
         return nnx.All(nnx.Param, nnx.Not(self.freeze_filter))
 
     def __post_init__(self) -> None:
+        if self.pressure_config_path is not None:
+            object.__setattr__(self, "model", resolve_pressure_config(self.model, self.pressure_config_path))
+            object.__setattr__(self, "pressure_config_path", None)
         if self.resume and self.overwrite:
             raise ValueError("Cannot resume and overwrite at the same time.")
         if self.pressure_freeze_backbone and getattr(self.model, "pressure", None) is None:
@@ -621,6 +627,31 @@ class TrainConfig:
 
 # Use `get_config` if you need to get a config by name in your code.
 _CONFIGS = [
+    # Single forearm slot; grid/history are placeholders, configurable through JSON or CLI.
+    TrainConfig(
+        name="pi05_pressure_forearm",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            pressure=PressureConfig(
+                num_sensors=1,
+                rows=4,
+                cols=4,
+                history=4,
+                patch_rows=1,
+                patch_cols=1,
+                sensor_names=("forearm_skin",),
+                sensor_locations=("forearm",),
+                use_temporal_differences=True,
+            ),
+            pytorch_compile_mode=None,
+        ),
+        data=PressureNpzDataConfig(),
+        pytorch_training_precision="float32",
+        pressure_freeze_backbone=True,
+        batch_size=1,
+        num_workers=0,
+        wandb_enabled=False,
+    ),
     # Hardware and file paths are example placeholders; replace before real training.
     TrainConfig(
         name="pi05_pressure",
@@ -1079,11 +1110,14 @@ def cli() -> TrainConfig:
     return tyro.extras.overridable_config_cli({k: (k, v) for k, v in _CONFIGS_DICT.items()})
 
 
-def get_config(config_name: str) -> TrainConfig:
+def get_config(config_name: str, *, pressure_config_path: str | None = None) -> TrainConfig:
     """Get a config by name."""
     if config_name not in _CONFIGS_DICT:
         closest = difflib.get_close_matches(config_name, _CONFIGS_DICT.keys(), n=1, cutoff=0.0)
         closest_str = f" Did you mean '{closest[0]}'? " if closest else ""
         raise ValueError(f"Config '{config_name}' not found.{closest_str}")
 
-    return _CONFIGS_DICT[config_name]
+    config = _CONFIGS_DICT[config_name]
+    if pressure_config_path is not None:
+        config = dataclasses.replace(config, pressure_config_path=pressure_config_path)
+    return config

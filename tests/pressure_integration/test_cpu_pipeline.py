@@ -102,7 +102,19 @@ def test_synthetic_npz_train_final_checkpoint_resume_and_policy_inference(tmp_pa
             action_horizon=2,
             max_token_len=64,
             dtype="float32",
-            pressure=PressureConfig(num_sensors=1, rows=2, cols=2, patch_rows=1, patch_cols=1, hidden_dim=8),
+            pressure=PressureConfig(
+                num_sensors=1,
+                rows=2,
+                cols=2,
+                patch_rows=1,
+                patch_cols=1,
+                hidden_dim=8,
+                history=2,
+                use_temporal_differences=True,
+                sensor_names=("forearm_skin",),
+                sensor_locations=("forearm",),
+                taxel_positions_mm=(((0, 0, 0), (10, 0, 0), (0, 10, 0), (10, 10, 0)),),
+            ),
         ),
         data=training_config.PressureNpzDataConfig(
             manifest_path=str(manifest),
@@ -136,7 +148,7 @@ def test_synthetic_npz_train_final_checkpoint_resume_and_policy_inference(tmp_pa
         assets_base_dir=str(tmp_path / "not-present"),
     )
     policy = policy_config.create_trained_policy(deployed, first, pytorch_device="cpu", sample_kwargs={"num_steps": 2})
-    sample = PressureNpzDataset(manifest, 1, 2)[3]
+    sample = PressureNpzDataset(manifest, cfg.model.pressure.history, 2)[3]
     sample.pop("actions")
     result = policy.infer(sample, noise=np.zeros((2, 4), dtype=np.float32))
     assert result["actions"].shape == (2, 3)

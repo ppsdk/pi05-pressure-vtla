@@ -4,7 +4,6 @@ This module intentionally does not import the JAX training stack so its
 contracts can be tested with small CPU models.
 """
 
-import dataclasses
 import hashlib
 import json
 import logging
@@ -14,6 +13,8 @@ import shutil
 from safetensors import safe_open
 import safetensors.torch
 import torch
+
+from openpi.models.pressure_config import PressureConfig
 
 
 def load_base_weights(model: torch.nn.Module, path: str | Path, *, allow_pressure_init: bool = False) -> None:
@@ -75,11 +76,7 @@ def _pressure_config(model: torch.nn.Module) -> dict | None:
     config = getattr(getattr(model, "config", None), "pressure", None)
     if config is None:
         return None
-    result = dataclasses.asdict(config)
-    for key in ("sensor_names", "sensor_locations"):
-        if key in result:
-            result[key] = list(result[key])
-    return result
+    return config.to_dict()
 
 
 def _file_hash(path: str | Path) -> str:
@@ -185,7 +182,10 @@ def validate_pressure_metadata(
     schema = metadata.get("schema_version")
     if schema not in (1, 2):
         raise ValueError("Unsupported pressure checkpoint metadata version.")
-    if metadata.get("pressure") != config:
+    saved_config = metadata.get("pressure")
+    if saved_config is not None:
+        saved_config = PressureConfig.from_dict(saved_config).to_dict()
+    if saved_config != config:
         raise ValueError("Pressure configuration differs from the checkpoint.")
     if metadata.get("freeze_backbone") != freeze_backbone:
         raise ValueError("Pressure backbone freeze setting differs from the checkpoint optimizer contract.")
