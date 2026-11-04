@@ -433,6 +433,12 @@ def train_loop(config: _config.TrainConfig):
             pi05=getattr(config.model, "pi05", False),
             pytorch_debug_tiny=getattr(config.model, "pytorch_debug_tiny", False),
             pressure=getattr(config.model, "pressure", None),
+            tactile_residual_enabled=getattr(config.model, "tactile_residual_enabled", False),
+            tactile_residual_hidden_dim=getattr(config.model, "tactile_residual_hidden_dim", 128),
+            tactile_residual_scale=getattr(config.model, "tactile_residual_scale", 1.0),
+            tactile_residual_max_abs=getattr(config.model, "tactile_residual_max_abs", None),
+            tactile_residual_only=getattr(config.model, "tactile_residual_only", False),
+            tactile_residual_freeze_base=getattr(config.model, "tactile_residual_freeze_base", False),
         )
     else:
         model_cfg = config.model
@@ -441,7 +447,10 @@ def train_loop(config: _config.TrainConfig):
 
     model = openpi.models_pytorch.pi0_pytorch.PI0Pytorch(model_cfg).to(device)
     trainable_parameters = _pressure_training.configure_trainable_parameters(
-        model, freeze_backbone=config.pressure_freeze_backbone
+        model,
+        freeze_backbone=config.pressure_freeze_backbone,
+        freeze_base_policy=getattr(config, "tactile_residual_freeze_base", False)
+        or getattr(config.model, "tactile_residual_freeze_base", False),
     )
 
     if hasattr(model, "gradient_checkpointing_enable"):

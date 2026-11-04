@@ -4,7 +4,6 @@ This module intentionally does not import the JAX training stack so its
 contracts can be tested with small CPU models.
 """
 
-import dataclasses
 import hashlib
 import json
 import logging
@@ -14,6 +13,8 @@ import shutil
 from safetensors import safe_open
 import safetensors.torch
 import torch
+
+from openpi.models.pressure_config import PressureConfig
 
 
 def load_base_weights(model: torch.nn.Module, path: str | Path, *, allow_pressure_init: bool = False) -> None:
@@ -31,25 +32,27 @@ def load_base_weights(model: torch.nn.Module, path: str | Path, *, allow_pressur
         raise ValueError("Pressure initialization requires an enabled pressure_encoder.")
     with safe_open(str(path), framework="pt", device="cpu") as checkpoint:
         keys = checkpoint.keys()  # safe_open is not a mapping and exposes its tensor names via keys().
-        has_pressure_weights = any(name.startswith("pressure_encoder.") for name in keys)
-    if has_pressure_weights:
+        has_vtla_weights = any(name.startswith(("pressure_encoder.", "tactile_residual_adapter.")) for name in keys)
+    if has_vtla_weights:
         # Reject a partially saved/truncated VTLA branch rather than combining
         # trained pressure parameters with unnoticed random initializations.
         safetensors.torch.load_model(model, str(path))
         return
     missing, unexpected = safetensors.torch.load_model(model, str(path), strict=False)
-    invalid_missing = sorted(name for name in missing if not name.startswith("pressure_encoder."))
+    invalid_missing = sorted(
+        name for name in missing if not name.startswith(("pressure_encoder.", "tactile_residual_adapter."))
+    )
     if invalid_missing or unexpected:
         raise RuntimeError(
             "Base checkpoint does not match the original model: "
             f"missing={invalid_missing}, unexpected={sorted(unexpected)}. "
-            "Only pressure_encoder.* may be newly initialized."
+            "Only pressure_encoder.* and tactile_residual_adapter.* may be newly initialized."
         )
     logging.info("Loaded base weights; newly initialized pressure parameters: %s", sorted(missing))
 
 
 def configure_trainable_parameters(
-    model: torch.nn.Module, *, freeze_backbone: bool = False
+    model: torch.nn.Module, *, freeze_backbone: bool = False, freeze_base_policy: bool = False
 ) -> list[torch.nn.Parameter]:
     """Freeze original PaliGemma parameters without cutting input gradients."""
     if freeze_backbone:
@@ -64,6 +67,16 @@ def configure_trainable_parameters(
             raise ValueError("No original PaliGemma parameters matched the expected backbone path.")
         logging.info("Froze %s PaliGemma parameters; kept the prefix computation graph.", frozen)
 
+    if freeze_base_policy:
+        if getattr(model, "tactile_residual_adapter", None) is None:
+            raise ValueError("tactile residual base freeze requires an enabled residual adapter")
+        frozen = 0
+        for name, parameter in model.named_parameters():
+            if not name.startswith(("pressure_encoder.", "tactile_residual_adapter.")):
+                parameter.requires_grad_(requires_grad=False)
+                frozen += parameter.numel()
+        logging.info("Froze %s base-policy parameters; training only tactile residual adapter.", frozen)
+
     trainable = [parameter for parameter in model.parameters() if parameter.requires_grad]
     if not trainable:
         raise ValueError("No trainable parameters remain.")
@@ -75,11 +88,21 @@ def _pressure_config(model: torch.nn.Module) -> dict | None:
     config = getattr(getattr(model, "config", None), "pressure", None)
     if config is None:
         return None
-    result = dataclasses.asdict(config)
-    for key in ("sensor_names", "sensor_locations"):
-        if key in result:
-            result[key] = list(result[key])
-    return result
+    return config.to_dict()
+
+
+def _tactile_residual_config(model: torch.nn.Module) -> dict | None:
+    config = getattr(model, "config", None)
+    if config is None or not getattr(config, "tactile_residual_enabled", False):
+        return None
+    return {
+        "enabled": True,
+        "hidden_dim": config.tactile_residual_hidden_dim,
+        "scale": config.tactile_residual_scale,
+        "max_abs": config.tactile_residual_max_abs,
+        "only": config.tactile_residual_only,
+        "freeze_base": config.tactile_residual_freeze_base,
+    }
 
 
 def _file_hash(path: str | Path) -> str:
@@ -149,6 +172,7 @@ def save_pressure_metadata(
         "pressure": config,
         "freeze_backbone": freeze_backbone,
         "stats_sha256": stats_hash,
+        "tactile_residual": _tactile_residual_config(model),
     }
     if policy_contract is not None:
         if norm_stats_path is None:
@@ -185,8 +209,13 @@ def validate_pressure_metadata(
     schema = metadata.get("schema_version")
     if schema not in (1, 2):
         raise ValueError("Unsupported pressure checkpoint metadata version.")
-    if metadata.get("pressure") != config:
+    saved_config = metadata.get("pressure")
+    if saved_config is not None:
+        saved_config = PressureConfig.from_dict(saved_config).to_dict()
+    if saved_config != config:
         raise ValueError("Pressure configuration differs from the checkpoint.")
+    if metadata.get("tactile_residual") != _tactile_residual_config(model):
+        raise ValueError("Tactile residual configuration differs from the checkpoint.")
     if metadata.get("freeze_backbone") != freeze_backbone:
         raise ValueError("Pressure backbone freeze setting differs from the checkpoint optimizer contract.")
     expected_hash = metadata.get("stats_sha256")

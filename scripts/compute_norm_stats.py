@@ -86,8 +86,12 @@ def create_rlds_dataloader(
     return data_loader, num_batches
 
 
-def main(config_name: str, max_frames: int | None = None):
-    config = _config.get_config(config_name)
+def main(config_name: str, max_frames: int | None = None, pressure_config_path: str | None = None):
+    config = (
+        _config.get_config(config_name)
+        if pressure_config_path is None
+        else _config.get_config(config_name, pressure_config_path=pressure_config_path)
+    )
     data_config = config.data.create(config.assets_dirs, config.model)
 
     if data_config.rlds_data_dir is not None:

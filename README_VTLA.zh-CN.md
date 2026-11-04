@@ -1,4 +1,4 @@
-# π0.5 电阻式压力阵列 VTLA 接入
+# π0.5 数值触觉阵列 VTLA 接入
 
 基于官方 [Physical-Intelligence/openpi](https://github.com/Physical-Intelligence/openpi)，基线提交 `215abfb217dbac7d5f1273282331b9b1866c0479`。新增实现采用 **PyTorch**；JAX 原模型保留，配置压力分支时会明确拒绝使用 JAX 模型工厂。
 
@@ -45,9 +45,65 @@ python -m venv .venv-integration
 
 替换脚本只接受虚拟环境内的 Transformers 4.53.2，并安装仓库原有的 openpi 替换文件。集成测试使用合成 NPZ、测试用 SentencePiece 词表与随机初始化的缩小模型；不会下载官方模型权重。完整的官方模型、真实数据和真实词表需要按上游说明另行配置。
 
+## 小臂触觉：模型配置
+
+使用 `pi05_pressure_forearm`，模型配置示例见 `examples/pressure/forearm.json`。当前安装位置按小臂设置，不假设左右侧；实际槽位数量、名称、覆盖区域由配置指定。赛感电容信号和途见数值阵列均沿数值触觉分支编码，保留 `pressure` 字段名兼容原训练/推理链路。
+
+| 配置字段 | 含义 |
+| --- | --- |
+| `num_sensors`, `rows`, `cols` | 皮肤片数及统一输入网格；同一模型各槽位共用行列数 |
+| `sensor_names`, `sensor_locations` | 固定槽位身份和安装部位；如 `forearm_skin` / `forearm` |
+| `history`, `max_age_seconds` | 历史帧数、最大观测年龄（秒），过期帧屏蔽 |
+| `patch_rows`, `patch_cols`, `hidden_dim` | 局部编码尺寸和 MLP 隐层宽度；`1×1` 表示逐测点编码 |
+| `signal_type`, `signal_unit` | 原始信号类型和单位；`raw/capacitance/resistance/pressure/force`，如 `capacitance` / `pF` |
+| `sample_period_seconds` | 可选名义采样周期，仅用于记录，不生成或替代实际时间戳 |
+| `taxel_positions_mm`, `coordinate_scale_mm` | 可选测点 XYZ 坐标及编码尺度，单位 mm；尺度范围 `[1e-6,1e9]` |
+| `use_temporal_differences` | 是否附加相邻历史差分与差分有效性通道；开启需 `history>=2` |
+| `max_difference_gap_seconds` | 可选差分最大间隔，超过时不计算该对历史差分 |
+
+这些字段是配置常量；每次观测仍提供原来的 `values/frame_valid/taxel_valid/saturated/age`。信号类型、单位、名义周期为契约元数据，不会触发单位换算、接触力估计或重采样。固定训练统计 `mean/scale` 继续独立保存；训练均值不是设备零载基线，不重复进行基线减除或归一化。
+
+JSON 支持以下两种加载方式：
+
+```python
+from openpi.models.pressure_config import PressureConfig
+from openpi.training.config import get_config
+
+pressure = PressureConfig.from_json("examples/pressure/forearm.json")
+config = get_config(
+    "pi05_pressure_forearm",
+    pressure_config_path="examples/pressure/forearm.json",
+)
+```
+
+训练时无需修改模型源文件，可通过参数覆盖：
+
+```bash
+# 请在 Slurm sbatch 脚本内、已配置完整依赖的 Conda 环境中运行。
+srun python scripts/train_pytorch.py pi05_pressure_forearm \
+  --exp-name forearm_run \
+  --pressure-config-path examples/pressure/forearm.json \
+  --data.manifest-path /path/to/train.json \
+  --data.pressure-stats-path /path/to/pressure_stats.npz \
+  --data.robot-action-dim 7 \
+  --pytorch-weight-path /path/to/pi05_torch
+```
+
+动作维数、路径仍须换为真实值，并准备原 state/action 统计。`scripts/compute_norm_stats.py --config-name pi05_pressure_forearm --pressure-config-path examples/pressure/forearm.json` 同样支持外部模型布局；该脚本的机器人数据路径仍从训练注册配置读取，需按原使用说明填写。
+
+JSON 完整定义触觉配置（省略字段使用 `PressureConfig` 默认值），不是对 preset 的局部合并。未知字段直接报错。`TrainConfig` 加载后消耗并清空源路径，后续 `dataclasses.replace`、恢复和部署不依赖原 JSON 文件。训练、恢复和 policy 创建应使用同一份解析后的模型配置；checkpoint 校验全部配置。旧 checkpoint 缺少新增字段时按默认值解释，关闭新增功能时保留原编码器权重形状。
+
+物理坐标格式为 `[S,R*C,3]`，按行优先排列，单位 mm；所有片使用同一约定的小臂局部坐标系。每个 patch 内全部坐标经 MLP 映射为几何嵌入，与原 sensor/space/age 编码相加。空列表关闭几何分支。曲面上的稀疏测点可用 `1×1 patch` 加真实 XYZ，避免把数组相邻直接视作物理相邻。不同分辨率皮肤同时输入时须先映射到共同网格并 mask 填充位置；本版不提供混合尺寸编码器。
+
+差分计算为 `x_new-x_old`，使用已经固定归一化的数值，不除以时间间隔；实际时间由 age 编码。两端必须都有效、有限、未饱和且采样时间严格递增，并满足可选间隔上限。缺帧或坏点不会跨过去补造差分；第一帧差分无效。绝对读数、原有效性和饱和通道始终保留，持续接触不会因差分为零而消失。关闭差分即可恢复原输入通道。
+
+新增触觉 token 数：`S * history * (rows/patch_rows) * (cols/patch_cols)`。示例为 64；提高空间分辨率或历史长度会增加前缀计算量。此实现继续使用 π0.5 前缀融合、原 ActionExpert 与 Flow Matching。小臂 preset 另外启用动作残差模式：触觉编码器输出有效 token 的汇聚表示，残差头预测整个动作时域的 `Δv_t`，并在每个 Flow Matching 去噪步加入 `v_base + scale·Δv_t`。残差头末层零初始化，因此从基座迁移时初始行为不变；无有效触觉时按覆盖率将残差置零。`tactile_residual_only=true` 会把触觉只用于残差头，不再把触觉 token 送入 π0.5 前缀；`tactile_residual_freeze_base=true` 时训练只更新触觉编码器和残差头。
+
+动作残差参数在 `Pi0Config` 中配置：`tactile_residual_enabled`、`tactile_residual_hidden_dim`、`tactile_residual_scale`、`tactile_residual_max_abs`、`tactile_residual_only` 和 `tactile_residual_freeze_base`。残差目标仍是归一化动作空间中的 Flow Matching 向量场，不是未经归一化的物理单位动作；真实部署前应通过示范数据验证每个动作维度的幅值上限。
+
 ## 数据契约
 
-硬件尚未确定，因此 `num_sensors/rows/cols/history/patch_rows/patch_cols` 是显式配置。仓库中的 `2 片 × 8×8、K=1、2×2 patch` 仅为可替换的配置示例，不是对用户设备的假定。
+硬件尚未确定，因此 `num_sensors/rows/cols/history/patch_rows/patch_cols` 是显式配置。原 `pi05_pressure` 的 `2 片 × 8×8、K=1、2×2 patch`，以及新增小臂配置的 `1 片 × 4×4、K=4、1×1 patch` 都仅为可替换示例，不是对实际设备的假定。
 
 一个 manifest JSON 显式列出同一个数据划分的 episode：
 
@@ -83,7 +139,7 @@ python -m venv .venv-integration
 | 键 | 形状/类型 | 说明 |
 | --- | --- | --- |
 | `timestamps` | `[T]`，秒 | 有限、严格递增 |
-| `values` | `[T,S,R,C]`，数值 | ADC、电阻或已标定信号，明确单位 |
+| `values` | `[T,S,R,C]`，数值 | 电容、ADC、电阻或已标定信号，明确单位 |
 | `arrival_times` | `[T]`，可选 | 实际到达时刻，不能早于采样；未提供时明确假设零传输延迟 |
 | `frame_valid` | `[T,S]`，bool，可选 | 默认存在帧有效 |
 | `taxel_valid` | `[T,S,R,C]`，bool，可选 | 默认有限感测单元有效 |

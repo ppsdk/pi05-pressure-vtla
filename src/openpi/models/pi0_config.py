@@ -1,4 +1,5 @@
 import dataclasses
+import math
 from typing import TYPE_CHECKING
 
 import flax.nnx as nnx
@@ -38,10 +39,48 @@ class Pi0Config(_model.BaseModelConfig):
     pytorch_debug_tiny: bool = False
     # Optional numeric pressure-array prefix. Currently supported by PyTorch only.
     pressure: PressureConfig | None = None
+    # Optional action residual predicted from the numeric tactile prefix.
+    tactile_residual_enabled: bool = False
+    tactile_residual_hidden_dim: int = 128
+    tactile_residual_scale: float = 1.0
+    tactile_residual_max_abs: float | None = None
+    tactile_residual_only: bool = False
+    tactile_residual_freeze_base: bool = False
 
     def __post_init__(self):
         if self.pressure is not None and not self.pi05:
             raise ValueError("The pressure prefix currently requires pi05=True")
+        if not isinstance(self.tactile_residual_enabled, bool):
+            raise ValueError("tactile_residual_enabled must be bool")
+        if self.tactile_residual_enabled and self.pressure is None:
+            raise ValueError("tactile_residual_enabled requires a pressure encoder")
+        if not isinstance(self.tactile_residual_only, bool):
+            raise ValueError("tactile_residual_only must be bool")
+        if self.tactile_residual_only and not self.tactile_residual_enabled:
+            raise ValueError("tactile_residual_only requires tactile_residual_enabled")
+        if not isinstance(self.tactile_residual_freeze_base, bool):
+            raise ValueError("tactile_residual_freeze_base must be bool")
+        if self.tactile_residual_freeze_base and not self.tactile_residual_enabled:
+            raise ValueError("tactile_residual_freeze_base requires tactile_residual_enabled")
+        if (
+            not isinstance(self.tactile_residual_hidden_dim, int)
+            or isinstance(self.tactile_residual_hidden_dim, bool)
+            or self.tactile_residual_hidden_dim <= 0
+        ):
+            raise ValueError("tactile_residual_hidden_dim must be a positive integer")
+        if (
+            isinstance(self.tactile_residual_scale, bool)
+            or not isinstance(self.tactile_residual_scale, (int, float))
+            or not math.isfinite(self.tactile_residual_scale)
+            or self.tactile_residual_scale <= 0
+        ):
+            raise ValueError("tactile_residual_scale must be finite and positive")
+        for name in ("tactile_residual_max_abs",):
+            value = getattr(self, name)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0
+            ):
+                raise ValueError(f"{name} must be finite and nonnegative")
         if self.pytorch_debug_tiny and (
             not self.pi05 or self.paligemma_variant != "dummy" or self.action_expert_variant != "dummy"
         ):
