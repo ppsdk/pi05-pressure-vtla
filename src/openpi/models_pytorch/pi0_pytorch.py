@@ -104,6 +104,16 @@ class PI0Pytorch(nn.Module):
         self.pressure_encoder = (
             PressureEncoder(config.pressure, paligemma_config.width) if config.pressure is not None else None
         )
+        self.tactile_residual_adapter = None
+        if config.tactile_residual_enabled:
+            self.tactile_residual_adapter = nn.Sequential(
+                nn.Linear(paligemma_config.width + 1, config.tactile_residual_hidden_dim),
+                nn.SiLU(),
+                nn.Linear(config.tactile_residual_hidden_dim, config.action_horizon * config.action_dim),
+            )
+            # A migrated base policy must initially behave exactly as before.
+            nn.init.zeros_(self.tactile_residual_adapter[-1].weight)
+            nn.init.zeros_(self.tactile_residual_adapter[-1].bias)
 
         if self.pi05:
             self.time_mlp_in = nn.Linear(action_expert_config.width, action_expert_config.width)
@@ -196,7 +206,7 @@ class PI0Pytorch(nn.Module):
         return time.to(dtype=torch.float32, device=device)
 
     def embed_prefix(
-        self, images, img_masks, lang_tokens, lang_masks, pressure=None
+        self, images, img_masks, lang_tokens, lang_masks, pressure=None, *, include_pressure=True
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Embed images with SigLIP and language tokens with embedding layer to prepare
         for PaliGemma transformer processing.
@@ -237,7 +247,7 @@ class PI0Pytorch(nn.Module):
         att_masks += [0] * num_lang_embs
 
         # Numeric pressure is a separate modality; never send it through SigLIP.
-        if self.pressure_encoder is not None:
+        if self.pressure_encoder is not None and include_pressure:
             if pressure is None:
                 raise ValueError(
                     "Pressure-enabled model requires a pressure dict (use explicit invalid masks if absent)"
@@ -246,7 +256,7 @@ class PI0Pytorch(nn.Module):
             embs.append(pressure_tokens.to(dtype=lang_emb.dtype))
             pad_masks.append(pressure_valid)
             att_masks += [0] * pressure_tokens.shape[1]
-        elif pressure is not None:
+        elif self.pressure_encoder is None and pressure is not None:
             raise ValueError("Received pressure data but this model has no pressure encoder")
 
         embs = torch.cat(embs, dim=1)
@@ -338,6 +348,31 @@ class PI0Pytorch(nn.Module):
 
         return embs, pad_masks, att_masks, adarms_cond
 
+    def tactile_residual(self, pressure) -> Tensor:
+        """Predict a normalized action-flow correction from valid tactile tokens."""
+        adapter = getattr(self, "tactile_residual_adapter", None)
+        if adapter is None:
+            if pressure is not None:
+                raise ValueError("Received pressure residual input but tactile residual is disabled")
+            raise ValueError("tactile residual adapter is disabled")
+        if pressure is None:
+            raise ValueError("Tactile residual requires pressure observations")
+        tokens, valid = self.pressure_encoder(pressure)
+        valid_f = valid.to(dtype=torch.float32)
+        weights = valid_f[..., None]
+        pooled = (tokens.float() * weights).sum(dim=1) / valid_f.sum(dim=1, keepdim=True).clamp_min(1.0)
+        coverage = valid_f.mean(dim=1, keepdim=True)
+        features = torch.cat((pooled, coverage), dim=-1)
+        residual = adapter(features.float()).reshape(
+            features.shape[0], self.config.action_horizon, self.config.action_dim
+        )
+        residual = residual * coverage.unsqueeze(-1) * float(self.config.tactile_residual_scale)
+        if self.config.tactile_residual_max_abs is not None:
+            residual = residual.clamp(
+                -float(self.config.tactile_residual_max_abs), float(self.config.tactile_residual_max_abs)
+            )
+        return residual
+
     def forward(self, observation, actions, noise=None, time=None) -> Tensor:
         """Do a full training forward pass and compute the loss (batch_size x num_steps x num_motors)"""
         images, img_masks, lang_tokens, lang_masks, state, pressure = self._preprocess_observation(
@@ -355,7 +390,12 @@ class PI0Pytorch(nn.Module):
         u_t = noise - actions
 
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
-            images, img_masks, lang_tokens, lang_masks, pressure
+            images,
+            img_masks,
+            lang_tokens,
+            lang_masks,
+            pressure,
+            include_pressure=not getattr(self.config, "tactile_residual_only", False),
         )
         suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(state, x_t, time)
         if (
@@ -399,6 +439,9 @@ class PI0Pytorch(nn.Module):
 
         v_t = self._apply_checkpoint(action_out_proj_func, suffix_out)
 
+        if getattr(self, "tactile_residual_adapter", None) is not None:
+            v_t = v_t + self.tactile_residual(pressure)
+
         return F.mse_loss(u_t, v_t, reduction="none")
 
     @torch.no_grad()
@@ -414,7 +457,15 @@ class PI0Pytorch(nn.Module):
         )
 
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
-            images, img_masks, lang_tokens, lang_masks, pressure
+            images,
+            img_masks,
+            lang_tokens,
+            lang_masks,
+            pressure,
+            include_pressure=not getattr(self.config, "tactile_residual_only", False),
+        )
+        tactile_residual = (
+            self.tactile_residual(pressure) if getattr(self, "tactile_residual_adapter", None) is not None else None
         )
         prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
         prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
@@ -444,6 +495,7 @@ class PI0Pytorch(nn.Module):
                 past_key_values,
                 x_t,
                 expanded_time,
+                tactile_residual=tactile_residual,
             )
 
             # Euler step - use new tensor assignment instead of in-place operation
@@ -458,6 +510,8 @@ class PI0Pytorch(nn.Module):
         past_key_values,
         x_t,
         timestep,
+        *,
+        tactile_residual=None,
     ):
         """Apply one denoising step of the noise `x_t` at a given timestep."""
         suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(state, x_t, timestep)
@@ -491,4 +545,7 @@ class PI0Pytorch(nn.Module):
         suffix_out = outputs_embeds[1]
         suffix_out = suffix_out[:, -self.config.action_horizon :]
         suffix_out = suffix_out.to(dtype=torch.float32)
-        return self.action_out_proj(suffix_out)
+        velocity = self.action_out_proj(suffix_out)
+        if getattr(self, "tactile_residual_adapter", None) is not None and tactile_residual is not None:
+            velocity = velocity + tactile_residual
+        return velocity

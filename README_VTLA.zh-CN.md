@@ -97,7 +97,9 @@ JSON 完整定义触觉配置（省略字段使用 `PressureConfig` 默认值）
 
 差分计算为 `x_new-x_old`，使用已经固定归一化的数值，不除以时间间隔；实际时间由 age 编码。两端必须都有效、有限、未饱和且采样时间严格递增，并满足可选间隔上限。缺帧或坏点不会跨过去补造差分；第一帧差分无效。绝对读数、原有效性和饱和通道始终保留，持续接触不会因差分为零而消失。关闭差分即可恢复原输入通道。
 
-新增触觉 token 数：`S * history * (rows/patch_rows) * (cols/patch_cols)`。示例为 64；提高空间分辨率或历史长度会增加前缀计算量。此实现继续使用 π0.5 前缀融合、原 ActionExpert 与 Flow Matching；未加入接触门控、额外残差策略或高频控制器。
+新增触觉 token 数：`S * history * (rows/patch_rows) * (cols/patch_cols)`。示例为 64；提高空间分辨率或历史长度会增加前缀计算量。此实现继续使用 π0.5 前缀融合、原 ActionExpert 与 Flow Matching。小臂 preset 另外启用动作残差模式：触觉编码器输出有效 token 的汇聚表示，残差头预测整个动作时域的 `Δv_t`，并在每个 Flow Matching 去噪步加入 `v_base + scale·Δv_t`。残差头末层零初始化，因此从基座迁移时初始行为不变；无有效触觉时按覆盖率将残差置零。`tactile_residual_only=true` 会把触觉只用于残差头，不再把触觉 token 送入 π0.5 前缀；`tactile_residual_freeze_base=true` 时训练只更新触觉编码器和残差头。
+
+动作残差参数在 `Pi0Config` 中配置：`tactile_residual_enabled`、`tactile_residual_hidden_dim`、`tactile_residual_scale`、`tactile_residual_max_abs`、`tactile_residual_only` 和 `tactile_residual_freeze_base`。残差目标仍是归一化动作空间中的 Flow Matching 向量场，不是未经归一化的物理单位动作；真实部署前应通过示范数据验证每个动作维度的幅值上限。
 
 ## 数据契约
 

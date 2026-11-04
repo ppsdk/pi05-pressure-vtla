@@ -548,6 +548,8 @@ class TrainConfig:
     pressure_freeze_backbone: bool = False
     # Consumed at construction; the resolved model config is the deployment contract.
     pressure_config_path: str | None = None
+    # Freeze the base action policy while training tactile encoder + residual adapter.
+    tactile_residual_freeze_base: bool = False
 
     lr_schedule: _optimizer.LRScheduleConfig = dataclasses.field(default_factory=_optimizer.CosineDecaySchedule)
     optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)
@@ -623,6 +625,8 @@ class TrainConfig:
             raise ValueError("Cannot resume and overwrite at the same time.")
         if self.pressure_freeze_backbone and getattr(self.model, "pressure", None) is None:
             raise ValueError("pressure_freeze_backbone requires a pressure-enabled model")
+        if self.tactile_residual_freeze_base and not getattr(self.model, "tactile_residual_enabled", False):
+            raise ValueError("tactile_residual_freeze_base requires an enabled tactile residual model")
 
 
 # Use `get_config` if you need to get a config by name in your code.
@@ -643,6 +647,12 @@ _CONFIGS = [
                 sensor_locations=("forearm",),
                 use_temporal_differences=True,
             ),
+            tactile_residual_enabled=True,
+            tactile_residual_hidden_dim=128,
+            tactile_residual_scale=0.2,
+            tactile_residual_max_abs=0.5,
+            tactile_residual_only=True,
+            tactile_residual_freeze_base=True,
             pytorch_compile_mode=None,
         ),
         data=PressureNpzDataConfig(),

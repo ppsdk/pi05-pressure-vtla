@@ -184,7 +184,7 @@ def modules(monkeypatch):
     )
 
 
-def _make_model(modules, *, with_pressure=True):
+def _make_model(modules, *, with_pressure=True, with_residual=False):
     # Bypass the official constructor: no pretrained model or replacement Transformers is installed here.
     model = modules.pi.PI0Pytorch.__new__(modules.pi.PI0Pytorch)
     nn.Module.__init__(model)
@@ -195,7 +195,15 @@ def _make_model(modules, *, with_pressure=True):
         if with_pressure
         else None
     )
-    model.config = types.SimpleNamespace(action_dim=3, action_horizon=4, pressure=pressure_config)
+    model.config = types.SimpleNamespace(
+        action_dim=3,
+        action_horizon=4,
+        pressure=pressure_config,
+        tactile_residual_enabled=with_residual,
+        tactile_residual_hidden_dim=7,
+        tactile_residual_scale=1.0,
+        tactile_residual_max_abs=None,
+    )
     model.pi05 = True
     model.gradient_checkpointing_enabled = False
     model.paligemma_with_expert = _AttentionBackbone()
@@ -204,6 +212,8 @@ def _make_model(modules, *, with_pressure=True):
     model.time_mlp_in = nn.Linear(6, 6)
     model.time_mlp_out = nn.Linear(6, 6)
     model.pressure_encoder = modules.pressure.PressureEncoder(pressure_config, 8) if with_pressure else None
+    if with_residual:
+        model.tactile_residual_adapter = nn.Sequential(nn.Linear(9, 7), nn.SiLU(), nn.Linear(7, 4 * 3))
     return model
 
 
@@ -325,6 +335,64 @@ def test_unavailable_pressure_values_cannot_change_real_loss_or_sample(harness):
     changed_sample = harness.model.sample_actions(torch.device("cpu"), observation, noise=harness.noise, num_steps=3)
     torch.testing.assert_close(changed_loss, original_loss)
     torch.testing.assert_close(changed_sample, original_sample)
+
+
+def test_tactile_action_residual_is_injected_into_flow_and_uses_valid_tokens(harness):
+    harness.model = _make_model(harness.modules, with_residual=True)
+    model = harness.model
+    with torch.no_grad():
+        for layer in model.tactile_residual_adapter:
+            if isinstance(layer, nn.Linear):
+                layer.weight.zero_()
+                layer.bias.zero_()
+        model.tactile_residual_adapter[-1].bias.fill_(0.25)
+
+    residual = model.tactile_residual(harness.observation.pressure)
+    assert residual.shape == (2, 4, 3)
+    _, valid = model.pressure_encoder(harness.observation.pressure)
+    expected = torch.full_like(residual, 0.25) * valid.float().mean(dim=1)[:, None, None]
+    torch.testing.assert_close(residual, expected)
+    loss_with_residual = model(harness.observation, harness.actions, noise=harness.noise, time=harness.time)
+
+    invalid = ~(
+        harness.observation.pressure["taxel_valid"] & harness.observation.pressure["frame_valid"][..., None, None]
+    )
+    harness.observation.pressure["values"][invalid] = float("nan")
+    masked_loss = model(harness.observation, harness.actions, noise=harness.noise, time=harness.time)
+    torch.testing.assert_close(masked_loss, loss_with_residual)
+
+
+def test_tactile_residual_changes_cached_sampler_and_respects_scale(harness):
+    harness.model = _make_model(harness.modules, with_residual=True)
+    model = harness.model
+    with torch.no_grad():
+        for layer in model.tactile_residual_adapter:
+            if isinstance(layer, nn.Linear):
+                layer.weight.zero_()
+                layer.bias.zero_()
+        model.tactile_residual_adapter[-1].bias.fill_(1.0)
+    model.config.tactile_residual_scale = 0.5
+    prefix, valid, block = _prefix(types.SimpleNamespace(model=model, observation=harness.observation))
+    mask = harness.modules.pi.make_att_2d_masks(valid, block)
+    _, cache = model.paligemma_with_expert(
+        attention_mask=model._prepare_attention_masks_4d(mask),  # noqa: SLF001
+        position_ids=valid.cumsum(dim=1) - 1,
+        past_key_values=None,
+        inputs_embeds=[prefix, None],
+        use_cache=True,
+    )
+    base = model.denoise_step(harness.observation.state, valid, cache, harness.noise, harness.time)
+    adjusted = model.denoise_step(
+        harness.observation.state,
+        valid,
+        cache,
+        harness.noise,
+        harness.time,
+        tactile_residual=model.tactile_residual(harness.observation.pressure),
+    )
+    _, pressure_valid = model.pressure_encoder(harness.observation.pressure)
+    expected = pressure_valid.float().mean(dim=1)[:, None, None] * 0.5
+    torch.testing.assert_close(adjusted - base, torch.full_like(base, 1.0) * expected)
 
 
 def test_real_sampler_fixed_noise_and_saved_pressure_weights_restore(harness, tmp_path):
