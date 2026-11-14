@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1900" height="940" viewBox="0 0 1900 940">
+<title>π0.5 Pressure VTLA tensor dimension flow</title>
+<desc>Default full-size model dimensions for observation prefix, action expert, and tactile flow residual.</desc>
+<defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L8,4 L0,8" fill="#475569"/></marker></defs>
+<rect width="1900" height="940" fill="white"/>
+<g font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" fill="#172b40">
+<text x="50" y="52" font-size="30" text-anchor="start" fill="#172b40" font-weight="700">总体架构 · 维度流程</text>
+<text x="50" y="87" font-size="20" text-anchor="start" fill="#52667a">默认模型维度 · 小臂触觉残差 · 基座按需适配本体</text>
+<text x="50" y="125" font-size="22" text-anchor="start" fill="#172b40" font-weight="700">观测前缀</text>
+<rect x="50" y="145" width="280" height="80" rx="8" fill="#eef4fa" stroke="#829ab1" stroke-width="1.5"/>
+<text x="190.0" y="177.0" font-size="20" text-anchor="middle" fill="#172b40" font-weight="700">RGB 图像（编码前）</text>
+<text x="190.0" y="207.0" font-size="20" text-anchor="middle" fill="#172b40">V 路 × [B,3,224,224]</text>
+<rect x="390" y="145" width="250" height="80" rx="8" fill="#eef4fa" stroke="#829ab1" stroke-width="1.5"/>
+<text x="515.0" y="177.0" font-size="20" text-anchor="middle" fill="#172b40" font-weight="700">SigLIP + 视觉投影</text>
+<text x="515.0" y="207.0" font-size="20" text-anchor="middle" fill="#172b40">[B,256V,2048]</text>
+<rect x="50" y="270" width="280" height="80" rx="8" fill="#eef4fa" stroke="#829ab1" stroke-width="1.5"/>
+<text x="190.0" y="302.0" font-size="20" text-anchor="middle" fill="#172b40" font-weight="700">语言 + 机器人状态</text>
+<text x="190.0" y="332.0" font-size="20" text-anchor="middle" fill="#172b40">state [B,D_s]</text>
+<rect x="390" y="270" width="250" height="80" rx="8" fill="#eef4fa" stroke="#829ab1" stroke-width="1.5"/>
+<text x="515.0" y="302.0" font-size="20" text-anchor="middle" fill="#172b40" font-weight="700">离散化 / 文本嵌入</text>
+<text x="515.0" y="332.0" font-size="19.5840554592721" text-anchor="middle" fill="#172b40">[B,L] → [B,L,2048]</text>
+<rect x="750" y="205" width="250" height="80" rx="8" fill="#eef4fa" stroke="#829ab1" stroke-width="1.5"/>
+<text x="875.0" y="237.0" font-size="20" text-anchor="middle" fill="#172b40" font-weight="700">拼接观测前缀</text>
+<text x="875.0" y="267.0" font-size="20" text-anchor="middle" fill="#172b40">[B,P,2048]</text>
+<rect x="1100" y="205" width="300" height="80" rx="8" fill="#eef4fa" stroke="#829ab1" stroke-width="1.5"/>
+<text x="1250.0" y="237.0" font-size="20" text-anchor="middle" fill="#172b40" font-weight="700">PaliGemma</text>
+<text x="1250.0" y="267.0" font-size="20" text-anchor="middle" fill="#172b40">[B,P,2048]</text>
+<rect x="1500" y="205" width="340" height="80" rx="8" fill="#eef4fa" stroke="#829ab1" stroke-width="1.5"/>
+<text x="1670.0" y="237.0" font-size="20" text-anchor="middle" fill="#172b40" font-weight="700">每层 K / V 缓存</text>
+<text x="1670.0" y="267.0" font-size="20" text-anchor="middle" fill="#172b40">各为 [B,1,P,256]</text>
+<polyline points="330,185 390,185" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<polyline points="330,310 390,310" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<polyline points="640,185 695,185 695,230 750,230" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<polyline points="640,310 695,310 695,260 750,260" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<polyline points="1000,245 1100,245" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<polyline points="1400,245 1500,245" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="50" y="413" font-size="22" text-anchor="start" fill="#172b40" font-weight="700">动作去噪</text>
+<rect x="50" y="455" width="280" height="80" rx="8" fill="#eef4fa" stroke="#829ab1" stroke-width="1.5"/>
+<text x="190.0" y="487.0" font-size="20" text-anchor="middle" fill="#172b40" font-weight="700">带噪动作 x_t</text>
+<text x="190.0" y="517.0" font-size="20" text-anchor="middle" fill="#172b40">[B,H,32]</text>
+<rect x="390" y="455" width="250" height="80" rx="8" fill="#eef4fa" stroke="#829ab1" stroke-width="1.5"/>
+<text x="515.0" y="487.0" font-size="20" text-anchor="middle" fill="#172b40" font-weight="700">动作输入投影</text>
+<text x="515.0" y="517.0" font-size="20" text-anchor="middle" fill="#172b40">[B,H,1024]</text>
+<rect x="750" y="455" width="250" height="80" rx="8" fill="#eef4fa" stroke="#829ab1" stroke-width="1.5"/>
+<text x="875.0" y="487.0" font-size="20" text-anchor="middle" fill="#172b40" font-weight="700">ActionExpert</text>
+<text x="875.0" y="517.0" font-size="20" text-anchor="middle" fill="#172b40">[B,H,1024]</text>
+<rect x="1100" y="455" width="300" height="80" rx="8" fill="#eef4fa" stroke="#829ab1" stroke-width="1.5"/>
+<text x="1250.0" y="487.0" font-size="20" text-anchor="middle" fill="#172b40" font-weight="700">动作输出投影</text>
+<text x="1250.0" y="517.0" font-size="20" text-anchor="middle" fill="#172b40">v_base [B,H,32]</text>
+<rect x="1640" y="445" width="220" height="100" rx="8" fill="#eef4fa" stroke="#829ab1" stroke-width="1.5"/>
+<text x="1750.0" y="472.0" font-size="16.92573402417962" text-anchor="middle" fill="#172b40" font-weight="700">Euler 积分 / 维度裁剪</text>
+<text x="1750.0" y="502.0" font-size="20" text-anchor="middle" fill="#172b40">[B,H,32]</text>
+<text x="1750.0" y="532.0" font-size="20" text-anchor="middle" fill="#172b40">→ [B,H,D_a]</text>
+<polyline points="330,495 390,495" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<polyline points="640,495 750,495" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<polyline points="1000,495 1100,495" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<polyline points="1400,495 1501,495" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<circle cx="1530" cy="495" r="29" fill="white" stroke="#475569" stroke-width="2"/>
+<text x="1530" y="504" font-size="30" text-anchor="middle" fill="#172b40">+</text>
+<polyline points="1559,495 1640,495" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<polyline points="1670,285 1670,365 950,365 950,455" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="1215" y="350" font-size="18" text-anchor="middle" fill="#52667a">读取观测 KV</text>
+<text x="510" y="413" font-size="19" text-anchor="start" fill="#172b40">时间 t [B] → [B,1024]</text>
+<polyline points="740,410 800,410 800,455" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="50" y="638" font-size="22" text-anchor="start" fill="#007f73" font-weight="700">触觉残差</text>
+<rect x="50" y="675" width="280" height="100" rx="8" fill="#e9f6f0" stroke="#4c9b8a" stroke-width="1.5"/>
+<text x="190.0" y="717.0" font-size="20" text-anchor="middle" fill="#172b40" font-weight="700">归一化触觉历史</text>
+<text x="190.0" y="747.0" font-size="20" text-anchor="middle" fill="#172b40">[B,S,K,R,C]</text>
+<rect x="390" y="675" width="250" height="100" rx="8" fill="#e9f6f0" stroke="#4c9b8a" stroke-width="1.5"/>
+<text x="515.0" y="717.0" font-size="19.755244755244753" text-anchor="middle" fill="#172b40" font-weight="700">Patch MLP + 位置编码</text>
+<text x="515.0" y="747.0" font-size="20" text-anchor="middle" fill="#172b40">[B,N_t,2048]</text>
+<rect x="750" y="675" width="250" height="100" rx="8" fill="#e9f6f0" stroke="#4c9b8a" stroke-width="1.5"/>
+<text x="875.0" y="702.0" font-size="20" text-anchor="middle" fill="#172b40" font-weight="700">特征平均 + 有效占比</text>
+<text x="875.0" y="732.0" font-size="20" text-anchor="middle" fill="#172b40">[B,2048] + [B,1]</text>
+<text x="875.0" y="762.0" font-size="20" text-anchor="middle" fill="#172b40">→ [B,2049]</text>
+<rect x="1100" y="675" width="300" height="100" rx="8" fill="#e9f6f0" stroke="#4c9b8a" stroke-width="1.5"/>
+<text x="1250.0" y="702.0" font-size="20" text-anchor="middle" fill="#172b40" font-weight="700">残差 MLP / reshape</text>
+<text x="1250.0" y="732.0" font-size="20" text-anchor="middle" fill="#172b40">[B,2049] → [B,128]</text>
+<text x="1250.0" y="762.0" font-size="19.49152542372882" text-anchor="middle" fill="#172b40">→ [B,H×32] → [B,H,32]</text>
+<polyline points="330,725 390,725" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<polyline points="640,725 750,725" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<polyline points="1000,725 1100,725" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<polyline points="1400,725 1530,725 1530,524" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="1550" y="645" font-size="19" text-anchor="start" fill="#007f73">Δv [B,H,32]</text>
+<text x="50" y="835" font-size="21" text-anchor="start" fill="#172b40">P = 256V + L</text>
+<text x="390" y="835" font-size="21" text-anchor="start" fill="#172b40">N_t = S × K × (R / p_r) × (C / p_c)</text>
+<text x="50" y="875" font-size="20" text-anchor="start" fill="#172b40">B 批量 · V 相机输入路数 · L 文本长度 · H 动作步数（默认 50） · D_a 机器人动作维数 · D_s 状态维数</text>
+<text x="50" y="915" font-size="20" text-anchor="start" fill="#172b40">S 传感器数 · K 历史帧数 · R,C 阵列尺寸 · p_r,p_c 触觉 patch 尺寸。序列长度包含补齐位置。</text>
+</g>
+</svg>

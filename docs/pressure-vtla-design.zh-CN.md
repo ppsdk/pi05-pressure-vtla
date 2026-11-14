@@ -2,7 +2,9 @@
 
 核查日期：2026-10-29。官方代码基线：`Physical-Intelligence/openpi@215abfb217dbac7d5f1273282331b9b1866c0479`。
 
-**交付状态：已基于官方 openpi 实现 PyTorch 压力阵列接入，CPU 组件测试 109 项通过；另已通过合成数据和随机初始化小模型的真实模块集成测试。未加载完整 π0.5 权重或运行完整模型训练。** 源码与运行说明见 [中文使用说明](../README_VTLA.zh-CN.md)。触觉为电阻式压力阵列，非视触觉，本机仅 CPU。阵列数量、分辨率、读数格式、标定、机器人和频率仍待绑定。下文的 token 数与训练阶段是建议值，不是任务效果结论。缓存数值一致性使用调用真实模型方法的小型替身主干测试，未验证完整官方主干的数值一致性。
+此前验证已完成 PyTorch 压力阵列接入，CPU 组件测试 109 项通过，并通过了合成数据与随机初始化小模型的真实模块集成测试。完整 π0.5 权重训练尚未执行。 源码与运行说明见 [中文使用说明](../README_VTLA.zh-CN.md)。触觉为电阻式压力阵列，非视触觉，本机仅 CPU。阵列数量、分辨率、读数格式、标定、机器人和频率仍待绑定。下文的 token 数与训练阶段是建议值，不是任务效果结论。缓存数值一致性使用调用真实模型方法的小型替身主干测试，未验证完整官方主干的数值一致性。
+
+本文第 0 至 10 节记录 2026-10-29 的前缀融合设计与后续 MLP 验证。当前小臂默认走独立动作残差路径，可选择 LingBot-Touch 编码器；前缀融合仍作为可选模式。当前架构见[技术总览](technical-overview.zh-CN.md)，训练步骤见[两阶段微调](lingbot-forearm.zh-CN.md#两阶段微调)。
 
 ## 0. π0.5 原生基线：改造前必须保留的计算图
 
@@ -23,7 +25,7 @@ prefix = [视觉, 语言/离散 state] → PaliGemma
     → flow velocity v_t
 ```
 
-π0.5 的 state 处理是它与 π0 的关键差异：state 先在 `[-1,1]` 范围离散为 256 个 bin，并以文本数字串加入 prompt；它不是 π0 路线中的连续 state suffix token。因此压力阵列应作为独立 prefix 模态追加，不能把压力值塞入 state 文本，也不能照搬 π0 的连续 state suffix 设计。
+π0.5 的 state 处理与 π0 不同：state 先在 `[-1,1]` 范围离散为 256 个 bin，并以文本数字串加入 prompt；它不是 π0 路线中的连续 state suffix token。因此压力阵列应作为独立 prefix 模态追加，不能把压力值塞入 state 文本，也不能照搬 π0 的连续 state suffix 设计。
 
 训练时 prefix 和 action suffix 一次联合前向，`use_cache=False`。动作推理时先对完整 prefix 做一次 PaliGemma prefill，得到每层 `past_key_values`；随后每个 Euler 去噪步将当前动作 suffix 的 K/V 与 prefix K/V 拼接，ActionExpert 用动作 Q 读取二者：
 
@@ -35,17 +37,17 @@ ActionExpert(suffix, past_key_values=prefix KV, use_cache=False)
       Q = Q_suffix
 ```
 
-这不是文本自回归解码：π0.5 不在动作路径中逐 token 生成语言。PaliGemma 负责建立观测 prefix cache，ActionExpert 在每个 flow step 读取；新的图像、语言、state 或压力观测到来后重新建立 cache。原生维度、mask 和数值例子见 [`docs/model-dimensions.zh-CN.md`](model-dimensions.zh-CN.md) 第 0 节。
+π0.5 联合生成动作 chunk，动作路径不逐 token 生成语言。PaliGemma 负责建立观测 prefix cache，ActionExpert 在每个 flow step 读取；新的图像、语言、state 或压力观测到来后重新建立 cache。原生维度、mask 和数值例子见 [`docs/model-dimensions.zh-CN.md`](model-dimensions.zh-CN.md) 第 0 节。
 
 ## 1. 改造边界与选型
 
-推荐主线：原始阵列读数经标定/固定尺度归一化，进入轻量空间/时间触觉编码器，再将定长触觉 token 加入 PaliGemma 观测前缀，利用原前缀的双向注意力完成视觉、语言、状态和触觉的融合。视觉继续走原 SigLIP；压力阵列不走图像编码器。动作后缀继续由原 ActionExpert 处理。
+原前缀融合路线：原始阵列读数经标定/固定尺度归一化，进入轻量空间/时间触觉编码器，再将定长触觉 token 加入 PaliGemma 观测前缀，利用原前缀的双向注意力完成视觉、语言、状态和触觉的融合。视觉继续走原 SigLIP；压力阵列不走图像编码器。动作后缀继续由原 ActionExpert 处理。
 
 这里“保留 ActionExpert”指保留结构、动作表示、时间条件、输出投影和求解流程；不等同于冻结其权重。允许微调原有专家。
 
 官方源码中，π0.5 通过 `Pi0Config(pi05=True)` 启用：状态离散化后进入语言 token；时间经 MLP 进入 ActionExpert 的 adaRMSNorm。不能照搬 π0 的连续 state suffix token。[配置](https://github.com/Physical-Intelligence/openpi/blob/215abfb217dbac7d5f1273282331b9b1866c0479/src/openpi/models/pi0_config.py)、[tokenizer](https://github.com/Physical-Intelligence/openpi/blob/215abfb217dbac7d5f1273282331b9b1866c0479/src/openpi/models/tokenizer.py)
 
-两条路线应明确区分：
+原设计比较了以下编码路线：
 
 | 路线 | 用途 | 成本与边界 |
 | --- | --- | --- |
@@ -161,7 +163,7 @@ positions = cumsum(valid.astype(int32), axis=-1) - 1
 
 `sum(prefix_valid, axis=-1)[:,None] + cumsum(suffix_valid, axis=-1) - 1`。
 
-缓存的**物理序列长度**包含占位 token，而动作的**位置编号偏移**沿上游使用有效前缀长度。两者不能混用，尤其是批内缺失触觉数量不同时。
+缓存的物理序列长度包含占位 token，而动作的位置编号偏移沿上游使用有效前缀长度。两者不能混用，尤其是批内缺失触觉数量不同时。
 
 每次新观测重新编码包含触觉的完整前缀，建立 KV cache；同一个 action chunk 的各次去噪复用该 cache。观测或触觉窗口改变就重新建 cache。若要去噪中途更新触觉，需要重新设计一致性，超出首版范围。[训练和缓存推理](https://github.com/Physical-Intelligence/openpi/blob/215abfb217dbac7d5f1273282331b9b1866c0479/src/openpi/models/pi0.py#L189)
 
@@ -204,7 +206,7 @@ positions = cumsum(valid.astype(int32), axis=-1) - 1
 
 ## 8. 训练与权重适配
 
-建议先只实现一种框架，避免同时维护两套未经验证的分支。目标是 JAX 还是 PyTorch 应由现有工程决定。
+本项目采用 PyTorch 实现压力扩展；JAX 保留上游模型。以下阶段 A/B 是原 MLP 前缀方案的训练建议，LingBot 小臂残差的冻结与解冻流程以两阶段微调文档为准。
 
 阶段 A：在 π0.5 权重基础上随机初始化新的小型压力编码器、投影与 sensor/space/age 参数，并训练这些新参数及原 ActionExpert；可冻结原视觉语言主干参数。不要冻结随机初始化的压力编码器。明确保存可训练参数清单和梯度统计。
 
@@ -214,8 +216,8 @@ positions = cumsum(valid.astype(int32), axis=-1) - 1
 
 checkpoint 分为两种：
 
-1. **从官方权重初始化 VTLA**：核对原参数名称、形状、加载完整性；仅允许明确列出的新增触觉键初始化，不能整体忽略不匹配。
-2. **恢复已训练 VTLA**：使用完整 VTLA 模型配置、所有新旧权重、优化器状态与归一化资源严格恢复，不能每次恢复时把触觉模块重新随机化。
+1. 从官方权重初始化 VTLA：核对原参数名称、形状、加载完整性；仅允许明确列出的新增触觉键初始化，不能整体忽略不匹配。
+2. 恢复已训练 VTLA：使用完整 VTLA 模型配置、所有新旧权重、优化器状态与归一化资源严格恢复，不能每次恢复时把触觉模块重新随机化。
 
 配置中至少记录传感器顺序、窗口 K、每帧 token 数、预处理版本、时间对齐规则、动作契约和缺失策略。可加入触觉 modality dropout，但同一实验的视觉基线、训练数据、步数与模型选择规则需匹配。
 
@@ -260,8 +262,8 @@ mask-only 测试或假数据 loss 下降不能替代完整训练验证。全部�
 5. 已实现压力进入 cached inference；小型替身主干下 joint/cached 一致性通过，真实小模型的 CPU 训练、保存、恢复和推理集成测试通过。
 6. 待硬件与数据绑定后运行真实样本、完整官方权重及任务评估。
 
-本机 CPU 环境：Python 3.11.1、torch 2.7.1+cpu、numpy 1.26.4，`cuda_available=False`；`pytest tests/vtla -q` 为 109 passed in 15.61s。GitHub Linux CPU 环境通过随机初始化小模型集成测试。原动作 suffix、denoise_step、时间/噪声采样及 Flow Matching 目标表达式与上游一致。未加载官方权重；JAX 压力模型明确未实现。
+此前本机 CPU 验证环境：Python 3.11.1、torch 2.7.1+cpu、numpy 1.26.4，`cuda_available=False`；`pytest tests/vtla -q` 为 109 passed in 15.61s。GitHub Linux CPU 环境通过随机初始化小模型集成测试。该版本的原动作 suffix、denoise_step、时间/噪声采样及 Flow Matching 目标表达式与上游一致。当前残差版本在 denoise_step 中叠加触觉修正；时间/噪声采样与目标表达式保留。完整 π0.5 官方权重尚未加载；JAX 压力模型未实现。
 
 尚缺：阵列数量与行列数、安装布局、raw ADC/电压/电阻或标定压力的样例字段；标定/坏点/量程契约；机器人与动作定义；采样/控制频率和可接受延迟；真实数据规模与完整主干运行资源。它们影响具体配置，不影响本文“数值触觉条件接入前缀、保留动作后缀”的总体设计。
 
-当前没有训练收益、实时性或科研创新性的实验证据；本文没有进行触觉 VLA 领域的完整新颖性检索。
+训练收益、实时性与科研创新性仍需实验和文献证据支持。本文未进行触觉 VLA 领域的完整新颖性检索。

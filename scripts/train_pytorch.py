@@ -495,6 +495,15 @@ def train_loop(config: _config.TrainConfig):
         )
         logging.info(f"Loaded PyTorch weights from {config.pytorch_weight_path}")
 
+    if not resuming:
+        from openpi.models_pytorch.lingbot_forearm import initialize_lingbot_forearm  # noqa: PLC0415
+
+        initialize_lingbot_forearm(
+            model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model,
+            bundle_path=config.lingbot_touch_bundle_path,
+            stats_path=getattr(data_config, "pressure_stats_path", None),
+        )
+
     # Optimizer + learning rate schedule from config
     warmup_steps = config.lr_schedule.warmup_steps
     peak_lr = config.lr_schedule.peak_lr
@@ -517,6 +526,11 @@ def train_loop(config: _config.TrainConfig):
             model, optim, config.checkpoint_dir, device, config=config, data_config=data_config
         )
         logging.info(f"Resumed training from step {global_step}")
+        from openpi.models_pytorch.lingbot_forearm import initialize_lingbot_forearm  # noqa: PLC0415
+
+        initialize_lingbot_forearm(
+            model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
+        )
 
     def lr_schedule(step: int):
         if step < warmup_steps:

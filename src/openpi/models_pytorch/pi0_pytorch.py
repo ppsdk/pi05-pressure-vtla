@@ -101,9 +101,14 @@ class PI0Pytorch(nn.Module):
 
         self.action_in_proj = nn.Linear(config.action_dim, action_expert_config.width)
         self.action_out_proj = nn.Linear(action_expert_config.width, config.action_dim)
-        self.pressure_encoder = (
-            PressureEncoder(config.pressure, paligemma_config.width) if config.pressure is not None else None
-        )
+        if config.pressure is not None and config.pressure.lingbot_touch is not None:
+            from openpi.models_pytorch.lingbot_forearm import LingBotForearmEncoder  # noqa: PLC0415
+
+            self.pressure_encoder = LingBotForearmEncoder(config.pressure, paligemma_config.width, config.action_dim)
+        else:
+            self.pressure_encoder = (
+                PressureEncoder(config.pressure, paligemma_config.width) if config.pressure is not None else None
+            )
         self.tactile_residual_adapter = None
         if config.tactile_residual_enabled:
             self.tactile_residual_adapter = nn.Sequential(
@@ -348,7 +353,7 @@ class PI0Pytorch(nn.Module):
 
         return embs, pad_masks, att_masks, adarms_cond
 
-    def tactile_residual(self, pressure) -> Tensor:
+    def tactile_residual(self, pressure, state=None) -> Tensor:
         """Predict a normalized action-flow correction from valid tactile tokens."""
         adapter = getattr(self, "tactile_residual_adapter", None)
         if adapter is None:
@@ -360,7 +365,10 @@ class PI0Pytorch(nn.Module):
         tokens, valid = self.pressure_encoder(pressure)
         valid_f = valid.to(dtype=torch.float32)
         weights = valid_f[..., None]
-        pooled = (tokens.float() * weights).sum(dim=1) / valid_f.sum(dim=1, keepdim=True).clamp_min(1.0)
+        if hasattr(self.pressure_encoder, "pool"):
+            pooled = self.pressure_encoder.pool(tokens, valid, state)
+        else:
+            pooled = (tokens.float() * weights).sum(dim=1) / valid_f.sum(dim=1, keepdim=True).clamp_min(1.0)
         coverage = valid_f.mean(dim=1, keepdim=True)
         features = torch.cat((pooled, coverage), dim=-1)
         residual = adapter(features.float()).reshape(
@@ -440,7 +448,7 @@ class PI0Pytorch(nn.Module):
         v_t = self._apply_checkpoint(action_out_proj_func, suffix_out)
 
         if getattr(self, "tactile_residual_adapter", None) is not None:
-            v_t = v_t + self.tactile_residual(pressure)
+            v_t = v_t + self.tactile_residual(pressure, state)
 
         return F.mse_loss(u_t, v_t, reduction="none")
 
@@ -465,7 +473,9 @@ class PI0Pytorch(nn.Module):
             include_pressure=not getattr(self.config, "tactile_residual_only", False),
         )
         tactile_residual = (
-            self.tactile_residual(pressure) if getattr(self, "tactile_residual_adapter", None) is not None else None
+            self.tactile_residual(pressure, state)
+            if getattr(self, "tactile_residual_adapter", None) is not None
+            else None
         )
         prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
         prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1

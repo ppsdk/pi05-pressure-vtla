@@ -1,0 +1,25 @@
+{
+  "num_sensors": 1,
+  "rows": 1,
+  "cols": 3,
+  "sensor_names": ["forearm_skin"],
+  "sensor_locations": ["forearm"],
+  "history": 4,
+  "patch_rows": 1,
+  "patch_cols": 1,
+  "max_age_seconds": 0.1,
+  "signal_type": "raw",
+  "signal_unit": "example_units",
+  "taxel_positions_mm": [[[0, 0, 0], [10, 0, 0], [40, 5, 0]]],
+  "coordinate_scale_mm": 100.0,
+  "use_temporal_differences": true,
+  "max_difference_gap_seconds": 0.05,
+  "lingbot_touch": {
+    "sensor_zero": [0.0],
+    "sensor_span": [1.0],
+    "time_scale_seconds": 0.01,
+    "freeze_pretrained": true,
+    "readout_queries": 4,
+    "readout_dim": 128
+  }
+}

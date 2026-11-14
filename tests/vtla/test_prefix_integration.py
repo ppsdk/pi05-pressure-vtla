@@ -7,14 +7,20 @@ They do not establish numerical parity with official weights or task performance
 """
 
 import importlib.util
+import json
 import math
 from pathlib import Path
 import sys
 import types
 
+import numpy as np
 import pytest
 import torch
 from torch import nn
+
+from openpi.models_pytorch.lingbot_forearm import LingBotForearmEncoder
+from openpi.models_pytorch.lingbot_touch import EncoderConfig
+from openpi.models_pytorch.lingbot_touch import TargetEncoder
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src"
 
@@ -441,3 +447,87 @@ def test_all_pressure_masked_matches_same_weights_without_pressure(harness):
     baseline_positions = baseline.paligemma_with_expert.calls[0]["positions"]
     torch.testing.assert_close(pressure_positions[:, :5], baseline_positions[:, :5])
     torch.testing.assert_close(pressure_positions[:, -4:], baseline_positions[:, -4:])
+
+
+@pytest.fixture
+def lingbot_residual_harness(harness, tmp_path):
+    """Real PI0 methods with a random small LingBot and the existing test-double VLA."""
+    modules = harness.modules
+    settings = modules.config.LingBotTouchConfig(
+        sensor_zero=(0, 0), sensor_span=(1, 1), time_scale_seconds=0.01, readout_dim=12
+    )
+    architecture = settings.encoder_config
+    architecture.update(embed_dim=40, depth=2, num_heads=2, output_layers=[0, 1], mlp_ratio=2)
+    config = modules.config.PressureConfig(
+        num_sensors=2,
+        rows=2,
+        cols=4,
+        history=2,
+        patch_rows=1,
+        patch_cols=1,
+        taxel_positions_mm=tuple(tuple((10 * c, 10 * r, s * 20) for r in range(2) for c in range(4)) for s in range(2)),
+        lingbot_touch=settings,
+    )
+    (tmp_path / "config.json").write_text(json.dumps(architecture))
+    torch.save(TargetEncoder(EncoderConfig.from_dict(architecture)).state_dict(), tmp_path / "encoder.pt")
+    np.savez(tmp_path / "stats.npz", mean=np.array(0), scale=np.array(1))
+    model = _make_model(modules, with_residual=True)
+    model.pressure_encoder = LingBotForearmEncoder(config, 8, 3)
+    model.pressure_encoder.initialize_from_bundle(tmp_path)
+    model.pressure_encoder.bind_normalization(tmp_path / "stats.npz")
+    model.config.pressure = config
+    model.config.tactile_residual_only = True
+    model.config.tactile_residual_max_abs = 0.5
+    nn.init.zeros_(model.tactile_residual_adapter[-1].weight)
+    nn.init.zeros_(model.tactile_residual_adapter[-1].bias)
+    harness.observation.pressure["age"][:, :, 0] = 0.02
+    harness.observation.pressure["age"][:, :, 1] = 0.01
+    harness.model = model
+    return harness
+
+
+def test_lingbot_flow_residual_zero_init_and_masked_fallback(lingbot_residual_harness):
+    h = lingbot_residual_harness
+    model = h.model
+    residual = model.tactile_residual(h.observation.pressure, h.observation.state)
+    assert residual.shape == h.actions.shape
+    assert torch.count_nonzero(residual) == 0
+    baseline = model(h.observation, h.actions, noise=h.noise, time=h.time)
+    baseline.mean().backward()
+    assert model.tactile_residual_adapter[-1].weight.grad.abs().sum() > 0
+    model.zero_grad(set_to_none=True)
+    with torch.no_grad():
+        model.tactile_residual_adapter[-1].weight.normal_(std=0.03)
+    # New encoder stays in the residual path; no tactile tokens enter the cached prefix.
+    prefix, _, _ = model.embed_prefix(
+        list(h.observation.images.values()),
+        list(h.observation.image_masks.values()),
+        h.observation.tokenized_prompt,
+        h.observation.tokenized_prompt_mask,
+        h.observation.pressure,
+        include_pressure=False,
+    )
+    assert prefix.shape[1] == 5
+    loss = model(h.observation, h.actions, noise=h.noise, time=h.time)
+    loss.mean().backward()
+    assert model.pressure_encoder.state_query.weight.grad is not None
+    assert model.pressure_encoder.output_projection.weight.grad.abs().sum() > 0
+    assert all(p.grad is None for p in model.pressure_encoder.pretrained.parameters())
+    h.observation.pressure["frame_valid"].zero_()
+    assert torch.count_nonzero(model.tactile_residual(h.observation.pressure, h.observation.state)) == 0
+
+
+def test_lingbot_sampler_computes_residual_once_per_chunk(lingbot_residual_harness, monkeypatch):
+    h = lingbot_residual_harness
+    calls = []
+    original = h.model.pressure_encoder.forward
+
+    def record(pressure):
+        calls.append(1)
+        return original(pressure)
+
+    monkeypatch.setattr(h.model.pressure_encoder, "forward", record)
+    result = h.model.sample_actions(torch.device("cpu"), h.observation, noise=h.noise, num_steps=3)
+    assert result.shape == h.actions.shape
+    assert torch.isfinite(result).all()
+    assert len(calls) == 1

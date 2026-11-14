@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="600" viewBox="0 0 1600 600">
+<title>π0.5 Pressure VTLA technical overview</title>
+<desc>Forearm tactile residual path. The pi0.5 base is adapted as needed to the target embodiment. Base and tactile flow fields are added before action denoising.</desc>
+<defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L8,4 L0,8" fill="#475569"/></marker></defs>
+<rect width="1600" height="600" fill="white"/>
+<g font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" fill="#172b40">
+<text x="40" y="53" font-size="30" text-anchor="start" fill="#172b40" font-weight="700">π0.5 Pressure VTLA</text>
+<rect x="250" y="90" width="810" height="270" rx="12" fill="#fbfcfe" stroke="#cbd5e1"/>
+<text x="270" y="125" font-size="21" text-anchor="start" fill="#172b40" font-weight="700">π0.5 基座（按需适配本体）</text>
+<rect x="40" y="215" width="180" height="80" rx="8" fill="#eef4fa" stroke="#829ab1" stroke-width="1.5"/>
+<text x="130.0" y="262.0" font-size="16.283924843423797" text-anchor="middle" fill="#172b40" font-weight="700">RGB / 语言 / 状态</text>
+<rect x="270" y="215" width="220" height="80" rx="8" fill="#eef4fa" stroke="#829ab1" stroke-width="1.5"/>
+<text x="380.0" y="247.0" font-size="20" text-anchor="middle" fill="#172b40" font-weight="700">观测编码</text>
+<text x="380.0" y="277.0" font-size="18.525519848771268" text-anchor="middle" fill="#172b40">SigLIP / 状态离散化</text>
+<rect x="550" y="215" width="200" height="80" rx="8" fill="#eef4fa" stroke="#829ab1" stroke-width="1.5"/>
+<text x="650.0" y="247.0" font-size="20" text-anchor="middle" fill="#172b40" font-weight="700">PaliGemma</text>
+<text x="650.0" y="277.0" font-size="20" text-anchor="middle" fill="#172b40">多模态观测融合</text>
+<rect x="830" y="215" width="210" height="80" rx="8" fill="#eef4fa" stroke="#829ab1" stroke-width="1.5"/>
+<text x="935.0" y="247.0" font-size="20" text-anchor="middle" fill="#172b40" font-weight="700">ActionExpert</text>
+<text x="935.0" y="277.0" font-size="20" text-anchor="middle" fill="#172b40">基础去噪速度</text>
+<rect x="1240" y="215" width="160" height="80" rx="8" fill="#eef4fa" stroke="#829ab1" stroke-width="1.5"/>
+<text x="1320.0" y="247.0" font-size="20" text-anchor="middle" fill="#172b40" font-weight="700">动作去噪</text>
+<text x="1320.0" y="277.0" font-size="20" text-anchor="middle" fill="#172b40">Euler 积分</text>
+<rect x="1450" y="215" width="110" height="80" rx="8" fill="#eef4fa" stroke="#829ab1" stroke-width="1.5"/>
+<text x="1505.0" y="262.0" font-size="20" text-anchor="middle" fill="#172b40" font-weight="700">动作</text>
+<polyline points="220,255 270,255" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<polyline points="490,255 550,255" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<polyline points="750,255 830,255" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="790" y="240" font-size="17" text-anchor="middle" fill="#52667a">KV</text>
+<text x="935" y="167" font-size="19" text-anchor="middle" fill="#172b40">带噪动作 / 时间</text>
+<polyline points="935,182 935,215" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<polyline points="1040,255 1141,255" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<circle cx="1170" cy="255" r="29" fill="white" stroke="#475569" stroke-width="2"/>
+<text x="1170" y="264" font-size="30" text-anchor="middle" fill="#172b40">+</text>
+<polyline points="1199,255 1240,255" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<polyline points="1400,255 1450,255" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="40" y="424" font-size="21" text-anchor="start" fill="#007f73" font-weight="700">触觉分支（可训练）</text>
+<rect x="40" y="465" width="180" height="80" rx="8" fill="#e9f6f0" stroke="#4c9b8a" stroke-width="1.5"/>
+<text x="130.0" y="497.0" font-size="20" text-anchor="middle" fill="#172b40" font-weight="700">小臂触觉</text>
+<text x="130.0" y="527.0" font-size="20" text-anchor="middle" fill="#172b40">阵列历史</text>
+<rect x="270" y="465" width="220" height="80" rx="8" fill="#e9f6f0" stroke="#4c9b8a" stroke-width="1.5"/>
+<text x="380.0" y="497.0" font-size="20" text-anchor="middle" fill="#172b40" font-weight="700">信号预处理</text>
+<text x="380.0" y="527.0" font-size="19.878296146044626" text-anchor="middle" fill="#172b40">历史帧对齐 / 归一化</text>
+<rect x="550" y="465" width="200" height="80" rx="8" fill="#e9f6f0" stroke="#4c9b8a" stroke-width="1.5"/>
+<text x="650.0" y="497.0" font-size="20" text-anchor="middle" fill="#172b40" font-weight="700">触觉编码器</text>
+<text x="650.0" y="527.0" font-size="17.849898580121703" text-anchor="middle" fill="#172b40">局部空间 / 时间信息</text>
+<rect x="830" y="465" width="210" height="80" rx="8" fill="#e9f6f0" stroke="#4c9b8a" stroke-width="1.5"/>
+<text x="935.0" y="497.0" font-size="20" text-anchor="middle" fill="#172b40" font-weight="700">有效特征平均</text>
+<text x="935.0" y="527.0" font-size="20" text-anchor="middle" fill="#172b40">整体触觉特征</text>
+<rect x="1100" y="465" width="140" height="80" rx="8" fill="#e9f6f0" stroke="#4c9b8a" stroke-width="1.5"/>
+<text x="1170.0" y="512.0" font-size="20" text-anchor="middle" fill="#172b40" font-weight="700">残差头</text>
+<polyline points="220,505 270,505" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<polyline points="490,505 550,505" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<polyline points="750,505 830,505" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<polyline points="1040,505 1100,505" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<polyline points="1170,465 1170,284" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="1190" y="386" font-size="18" text-anchor="start" fill="#007f73">触觉修正</text>
+</g>
+</svg>

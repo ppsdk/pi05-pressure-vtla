@@ -1,22 +1,30 @@
 # π0.5 数值触觉阵列 VTLA 接入
 
-基于官方 [Physical-Intelligence/openpi](https://github.com/Physical-Intelligence/openpi)，基线提交 `215abfb217dbac7d5f1273282331b9b1866c0479`。新增实现采用 **PyTorch**；JAX 原模型保留，配置压力分支时会明确拒绝使用 JAX 模型工厂。
+可选的 LingBot-Touch 预训练模型小臂适配沿用触觉动作残差路径，支持
+动态有效性 mask、真实时间/XYZ 编码与机器人状态条件注意力读取。
+配置、初始化、两阶段微调和验证范围见 [接入说明](docs/lingbot-forearm.zh-CN.md)。
 
-本机仅使用 CPU。本次验证包括数据、压力编码器、训练加载/冻结/恢复，以及调用真实 `PI0Pytorch` 方法的小型替身主干测试；**没有加载完整 π0.5 权重，没有运行完整主干训练，也没有真实机器人或传感器实验**。替身主干用于检查计算链路，不代表官方权重数值验证或任务效果。
+基于官方 [Physical-Intelligence/openpi](https://github.com/Physical-Intelligence/openpi)，基线提交 `215abfb217dbac7d5f1273282331b9b1866c0479`。扩展采用 PyTorch；JAX 原模型保留，配置压力分支时会明确拒绝使用 JAX 模型工厂。
 
-2026-10-29 验证：Python 3.11.1、torch 2.7.1+cpu、numpy 1.26.4，`cuda_available=False`；CPU 测试 **93 passed in 9.52s**，21 个修改/新增 Python 文件 Ruff、格式与语法编译检查通过。源码保留上游历史，硬件参数与真实数据仍待绑定。
+本机使用 CPU 验证数据、压力编码器、训练加载/冻结/恢复，并调用真实 `PI0Pytorch` 方法检查小型替身主干链路。完整 π0.5 权重训练、真实机器人和传感器实验尚未执行。替身主干用于检查计算链路，任务效果需单独评估。
 
-后续开发验证：本机 CPU 组件测试 **109 passed in 15.61s**。GitHub 的 Linux CPU 环境还通过了随机初始化小模型、合成 NPZ 和测试词表的真实数据/模型/训练/恢复/推理集成测试。它不代表预训练 π0.5 权重或真实硬件结果。
+2026-10-29 验证：Python 3.11.1、torch 2.7.1+cpu、numpy 1.26.4，`cuda_available=False`；CPU 测试 93 passed in 9.52s，21 个修改/新增 Python 文件 Ruff、格式与语法编译检查通过。源码保留上游历史，硬件参数与真实数据仍待绑定。
+
+后续开发验证：本机 CPU 组件测试 109 passed in 15.61s。GitHub 的 Linux CPU 环境还通过了随机初始化小模型、合成 NPZ 和测试词表的真实数据/模型/训练/恢复/推理集成测试。它不代表预训练 π0.5 权重或真实硬件结果。
+
+2026-11-14 的 LingBot 适配验证中，CPU 组件与残差集成测试共 166 项通过。官方 Tiny 权重已通过合成输入下的参考前向一致性、冻结/解冻反向和完整恢复检查。历史验证详情保存在 `docs/VALIDATION.md`。
 
 ## 实现内容
 
 - 数值压力阵列独立于 RGB 图像、机器人 `state` 和动作标签；不生成伪彩图，不经过 SigLIP 或图像增强。
-- 每片阵列按局部 patch 经过共享 MLP 编码；加入 sensor、空间和实际采样 age 编码，再映射到 PaliGemma 的前缀宽度，默认 2048。
-- token 顺序为 `[原视觉, 原语言+离散状态, 压力]`。前缀双向融合；动作后缀保留原块注意力、1024 维 ActionExpert、adaRMSNorm 时间条件、Flow Matching 目标与 Euler 采样。
-- 压力有效性并入原 token mask 和 `cumsum(valid)-1` 位置编号；推理先建立包含压力的完整前缀 KV cache，同一次动作生成内复用。
+- 默认 MLP 编码器按局部 patch 编码每片阵列；加入 sensor、空间和实际采样 age 编码，再映射到 PaliGemma 的前缀宽度，默认 2048。
+- 前缀融合模式的 token 顺序为 `[原视觉, 原语言+离散状态, 压力]`。前缀双向融合；动作后缀保留原块注意力、1024 维 ActionExpert、adaRMSNorm 时间条件、Flow Matching 目标与 Euler 采样。
+- 前缀融合模式将压力有效性并入原 token mask 和 `cumsum(valid)-1` 位置编号；推理先建立包含压力的完整前缀 KV cache，同一次动作生成内复用。
 - 无接触、缺帧、坏 taxel、饱和和陈旧度分别表达。无效/非有限信号在任何学习操作前清理；饱和仍作为受限测量输入。
-- 基座迁移仅允许新增 `pressure_encoder.*` 参数缺失。正式恢复严格加载；checkpoint 保存压力配置、固定归一化资产和其 SHA256。
+- 基座迁移仅允许新增 `pressure_encoder.*` 和 `tactile_residual_adapter.*` 参数缺失。正式恢复严格加载；checkpoint 保存压力配置、固定归一化资产和其 SHA256。
 - 可冻结 PaliGemma 权重，动作专家与压力分支继续训练；不对整个冻结主干使用 `no_grad()`，保留压力输入的反向梯度。
+
+小臂默认使用独立残差模式，触觉不进入观测前缀。MLP 编码器使用有效 token 均值；LingBot 编码器使用预训练时空表示和机器人状态条件注意力读取。两者都保留原动作专家与 Flow Matching 目标。
 
 ## CPU 上立即运行验证
 
@@ -91,13 +99,15 @@ srun python scripts/train_pytorch.py pi05_pressure_forearm \
 
 动作维数、路径仍须换为真实值，并准备原 state/action 统计。`scripts/compute_norm_stats.py --config-name pi05_pressure_forearm --pressure-config-path examples/pressure/forearm.json` 同样支持外部模型布局；该脚本的机器人数据路径仍从训练注册配置读取，需按原使用说明填写。
 
-JSON 完整定义触觉配置（省略字段使用 `PressureConfig` 默认值），不是对 preset 的局部合并。未知字段直接报错。`TrainConfig` 加载后消耗并清空源路径，后续 `dataclasses.replace`、恢复和部署不依赖原 JSON 文件。训练、恢复和 policy 创建应使用同一份解析后的模型配置；checkpoint 校验全部配置。旧 checkpoint 缺少新增字段时按默认值解释，关闭新增功能时保留原编码器权重形状。
+JSON 完整定义触觉配置，省略字段使用 `PressureConfig` 默认值，因此要填写完整布局。未知字段直接报错。`TrainConfig` 加载后消耗并清空源路径，后续 `dataclasses.replace`、恢复和部署不依赖原 JSON 文件。训练、恢复和 policy 创建应使用同一份解析后的模型配置；checkpoint 校验全部配置。旧 checkpoint 缺少新增字段时按默认值解释，关闭新增功能时保留原编码器权重形状。
 
 物理坐标格式为 `[S,R*C,3]`，按行优先排列，单位 mm；所有片使用同一约定的小臂局部坐标系。每个 patch 内全部坐标经 MLP 映射为几何嵌入，与原 sensor/space/age 编码相加。空列表关闭几何分支。曲面上的稀疏测点可用 `1×1 patch` 加真实 XYZ，避免把数组相邻直接视作物理相邻。不同分辨率皮肤同时输入时须先映射到共同网格并 mask 填充位置；本版不提供混合尺寸编码器。
 
 差分计算为 `x_new-x_old`，使用已经固定归一化的数值，不除以时间间隔；实际时间由 age 编码。两端必须都有效、有限、未饱和且采样时间严格递增，并满足可选间隔上限。缺帧或坏点不会跨过去补造差分；第一帧差分无效。绝对读数、原有效性和饱和通道始终保留，持续接触不会因差分为零而消失。关闭差分即可恢复原输入通道。
 
-新增触觉 token 数：`S * history * (rows/patch_rows) * (cols/patch_cols)`。示例为 64；提高空间分辨率或历史长度会增加前缀计算量。此实现继续使用 π0.5 前缀融合、原 ActionExpert 与 Flow Matching。小臂 preset 另外启用动作残差模式：触觉编码器输出有效 token 的汇聚表示，残差头预测整个动作时域的 `Δv_t`，并在每个 Flow Matching 去噪步加入 `v_base + scale·Δv_t`。残差头末层零初始化，因此从基座迁移时初始行为不变；无有效触觉时按覆盖率将残差置零。`tactile_residual_only=true` 会把触觉只用于残差头，不再把触觉 token 送入 π0.5 前缀；`tactile_residual_freeze_base=true` 时训练只更新触觉编码器和残差头。
+MLP 编码器的触觉 token 数为：`S * history * (rows/patch_rows) * (cols/patch_cols)`。示例为 64；前缀模式下，提高空间分辨率或历史长度会增加前缀计算量。原 ActionExpert 与 Flow Matching 结构保留，小臂 preset 默认启用动作残差模式：触觉编码器输出有效 token 的汇聚表示，残差头预测整个动作时域的 `Δv_t`，并在每个 Flow Matching 去噪步加入 `v_base + scale·Δv_t`。残差头末层零初始化，因此从基座迁移时初始行为不变；无有效触觉时按覆盖率将残差置零。`tactile_residual_only=true` 会把触觉只用于残差头，不再把触觉 token 送入 π0.5 前缀；`tactile_residual_freeze_base=true` 时训练只更新触觉编码器和残差头。
+
+LingBot 编码器将同一测点的连续 tubelet 帧合成一个 token，token 数为 `S * (history / tubelet_size) * rows * cols`，要求逐测点编码及真实 XYZ。其差分、掩码与读取方式见 LingBot 接入说明。
 
 动作残差参数在 `Pi0Config` 中配置：`tactile_residual_enabled`、`tactile_residual_hidden_dim`、`tactile_residual_scale`、`tactile_residual_max_abs`、`tactile_residual_only` 和 `tactile_residual_freeze_base`。残差目标仍是归一化动作空间中的 Flow Matching 向量场，不是未经归一化的物理单位动作；真实部署前应通过示范数据验证每个动作维度的幅值上限。
 
@@ -182,7 +192,7 @@ python scripts/compute_pressure_stats.py --manifest D:/data/train.json --output 
 
 输出 `mean/scale/count[S,R,C]`。只统计有效、有限、未饱和读数；近零方差使用尺度下限，无有效样本 taxel 保留 `count=0`。禁止从测试集拟合或逐帧 min-max 归一化。
 
-该脚本只缩放信号，**不提供设备的 ADC/电阻→Pa/N 校准曲线**。设备未定时不能伪造标定；基线漂移、迟滞、串扰及量程判据需在采集适配层验证。若零载基线需要在线更新，只能用当时可获得的参考条件。
+该脚本输出固定缩放统计。设备的 ADC/电阻→Pa/N 校准曲线需单独提供；基线漂移、迟滞、串扰及量程判据需在采集适配层验证。若零载基线需要在线更新，只能用当时可获得的参考条件。
 
 ## 绑定真实数据与完整模型训练
 
@@ -191,7 +201,7 @@ python scripts/compute_pressure_stats.py --manifest D:/data/train.json --output 
 1. `PressureConfig(num_sensors=..., rows=..., cols=..., history=..., patch_rows=..., patch_cols=...)`；行列需整除 patch 尺寸。
 2. `PressureNpzDataConfig(manifest_path=..., pressure_stats_path=..., robot_action_dim=...)`。动作真实维数必须显式给出，输出按该维数裁去模型补维。
 3. 真实动作坐标系、动作时间步、action horizon 和执行步数；不要因数组形状正确就视为控制接口匹配。
-4. `pytorch_weight_path` 指向已转换的官方 π0.5 PyTorch 权重目录。保留原骨干参数名；新压力编码器随机初始化。
+4. `pytorch_weight_path` 指向已转换的官方 π0.5 PyTorch 权重目录。保留原骨干参数名；MLP 压力编码器随机初始化，LingBot 编码器另从匹配的官方 bundle 初始化。
 
 完整训练仍使用官方依赖、固定的 Transformers 替换文件和官方安装流程。CPU 组件环境没有安装这些完整依赖；本次没有执行以下命令：
 
@@ -202,6 +212,8 @@ uv run scripts/train_pytorch.py pi05_pressure --exp_name pressure_run --pytorch_
 ```
 
 原 `compute_norm_stats.py` 继续只统计 state/actions，压力统计单独保存。`pressure_freeze_backbone=True` 冻结旧 VLM 参数，优化器仅接收可训练参数。默认压力训练精度为 float32；CPU 部署压力模型时也选择 float32 并关闭编译。完整主干在本机的时间和内存可行性尚未测量。
+
+LingBot 小臂训练按[两阶段微调](docs/lingbot-forearm.zh-CN.md#两阶段微调)执行：先冻结 Tiny 更新适配层，再根据验证表现解冻微调。阶段切换新建实验并加载上一阶段权重；同阶段中断才使用 `--resume`。当前所有可训练参数共享同一学习率。
 
 checkpoint 包含 `model.safetensors`、原训练状态、`pressure_config.json`、`assets/pressure_stats.npz` 及原 state/action 统计。新 checkpoint 同时记录机器人动作维数、模型动作时域、状态文本化与归一化配置，并校验 state/action 统计内容；最后一次优化器更新也会保存。在线创建 policy 时使用 checkpoint 内统计，不需要保留训练 manifest 或训练资产目录。
 

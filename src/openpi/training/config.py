@@ -548,6 +548,8 @@ class TrainConfig:
     pressure_freeze_backbone: bool = False
     # Consumed at construction; the resolved model config is the deployment contract.
     pressure_config_path: str | None = None
+    # Initialization-only bundle; resume and deployment use the full checkpoint.
+    lingbot_touch_bundle_path: str | None = None
     # Freeze the base action policy while training tactile encoder + residual adapter.
     tactile_residual_freeze_base: bool = False
 

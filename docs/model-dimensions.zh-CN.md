@@ -1,8 +1,10 @@
 # π0.5 原生架构与压力 VTLA 模型维度流
 
-本文先说明官方 π0.5 的原生 PyTorch 架构，再说明当前电阻式压力阵列 VTLA 的增量。对应实现为 `src/openpi/models_pytorch/pi0_pytorch.py`、`gemma_pytorch.py`、`pressure_pytorch.py` 和 `PressureConfig`。原生基线仍可在没有压力字段时运行；压力配置只在 PyTorch π0.5 路径启用。
+本文说明官方 π0.5 的原生 PyTorch 架构、MLP 压力前缀的维度，以及小臂残差和 LingBot 适配的维度。对应实现为 `src/openpi/models_pytorch/pi0_pytorch.py`、`gemma_pytorch.py`、`pressure_pytorch.py` 和 `PressureConfig`。原生基线仍可在没有压力字段时运行；压力配置只在 PyTorch π0.5 路径启用。
 
 符号：`B` batch；`S` 压力传感器槽位（可混合夹爪/小臂）；`K` 历史帧；`R,C` 阵列行列；`Pr,Pc` patch 行列；`Np=(R/Pr)*(C/Pc)` patch 数；`A=action_dim`；`H=action_horizon`；`L` 实际语言/离散状态 token 数；`Dv` PaliGemma 宽度；`De` ActionExpert 宽度；`Dh` 压力 MLP 隐藏宽度。
+
+第 0 至 8 节的压力拼接公式对应 MLP 前缀融合模式。小臂 preset 默认不将触觉加入前缀，其残差与 LingBot 维度见第 10 节。
 
 ## 当前配置数值
 
@@ -20,7 +22,7 @@ debug 配置是随机初始化 CPU 链路测试模型，不能代表官方 π0.5
 
 ## 0. π0.5 原生架构（无压力输入）
 
-π0.5 不是单一宽度的普通语言模型，而是由 PaliGemma 视觉语言主干和一个较窄的 ActionExpert 组成的双专家模型。两者在每层注意力中使用相同的 `num_heads`、`num_kv_heads` 和 `head_dim`，但保持各自的 hidden width；各自投影得到 Q/K/V 后，在注意力序列维拼接，注意力输出再按原序列长度拆回两个专家。
+π0.5 由 PaliGemma 视觉语言主干和较窄的 ActionExpert 两个专家组成。两者在每层注意力中使用相同的 `num_heads`、`num_kv_heads` 和 `head_dim`，但保持各自的 hidden width；各自投影得到 Q/K/V 后，在注意力序列维拼接，注意力输出再按原序列长度拆回两个专家。
 
 ### 0.1 原生配置和输入
 
@@ -149,9 +151,9 @@ Q = Q_suffix
 attention(Q, K, V)
 ```
 
-这里的 `past_key_values` 特指 PaliGemma **语言 Transformer** 的缓存。SigLIP 视觉塔先把 RGB 变为视觉 embedding；视觉塔本身不通过这份 `past_key_values` 做逐 patch 解码。视觉 embedding 和语言 embedding 一起作为语言 Transformer 的 prefix 输入，因此这些视觉 token 仍会在语言 Transformer 的 K/V 中留下对应位置。
+这里的 `past_key_values` 特指 PaliGemma 语言 Transformer 的缓存。SigLIP 视觉塔先把 RGB 变为视觉 embedding；视觉塔本身不通过这份 `past_key_values` 做逐 patch 解码。视觉 embedding 和语言 embedding 一起作为语言 Transformer 的 prefix 输入，因此这些视觉 token 仍会在语言 Transformer 的 K/V 中留下对应位置。
 
-所以原生 π0.5 的 cache 是观测 prefix 的 KV cache：PaliGemma 语言 Transformer 负责填充，ActionExpert 在每个去噪步读取。训练阶段 `use_cache=False`；新的图像、语言或 state 到来时，必须重新建立 prefix cache。
+原生 π0.5 使用观测 prefix 的 KV cache：PaliGemma 语言 Transformer 负责填充，ActionExpert 在每个去噪步读取。训练阶段 `use_cache=False`；新的图像、语言或 state 到来时，必须重新建立 prefix cache。
 
 ### 0.5 原生数据流数值例子
 
@@ -232,7 +234,7 @@ RGB    [2,480,640,3]-> resize/pad         -> [2,3,224,224]
 [2,50,32] -> [:,:,:16] -> [2,50,16]
 ```
 
-这说明 `A=32` 是 π0.5 模型内部的统一动作宽度，`D_robot_action=16` 才是这个假设机器人实际执行的动作宽度。
+`A=32` 是 π0.5 模型内部的统一动作宽度，`D_robot_action=16` 才是这个假设机器人实际执行的动作宽度。
 
 ### 数值例子：单臂夹爪 + 小臂压力阵列
 
@@ -426,7 +428,7 @@ flow output      [B,16,8]
 robot output     [B,16,D_robot_action]
 ```
 
-## 8. 核心结论
+## 8. MLP 前缀模式的维度约束
 
 1. 新增序列长度只有 `ΔP=S*K*(R/Pr)*(C/Pc)`。
 2. 压力 token 最后一维是 `Dv=2048`，必须映射到 PaliGemma 宽度。
@@ -438,3 +440,38 @@ robot output     [B,16,D_robot_action]
 ## 9. 证据边界
 
 这些是代码配置与张量契约的维度，不是完整官方权重在本机已经训练得到的性能结果。当前 CPU 只验证小模型和组件链路；完整 π0.5 权重训练、真实夹爪/小臂数据和实机闭环尚未验证。
+
+## 10. 小臂残差与 LingBot-Touch 维度
+
+`pi05_pressure_forearm` 默认启用 `tactile_residual_only=true`。观测前缀只包含
+视觉、语言与离散状态，长度保持为 `P0=768+L`；触觉通过独立分支修正动作
+向量场。MLP 基线的 token 数仍为 `S*K*Np`，读取方式是有效 token 均值。
+
+LingBot Tiny 使用逐测点的两帧 tubelet。配置 `patch_rows=patch_cols=1` 时，
+令 `G=K/2`，触觉 token 数为 `Nt=S*G*R*C`。`K` 必须为 2 的倍数；
+部分 tubelet 无效只改变 mask，不改变张量形状。
+
+```text
+pressure values          [B,S,K,R,C]
+每测点两帧、XYZ 测量通道  [B,S,G,R*C,6]  # 标量在 Z，XY 为零
+压阻 tokenizer           [B,Nt,192]
+12 层 Transformer        [B,Nt,192]
+第 2/5/8/11 层输出拼接   [B,Nt,768]     # 层编号从 0 开始
+output_projection        [B,Nt,2048]
+state                    [B,32]
+状态条件的 4 个 query    [B,4,128]
+注意力读取并汇聚          [B,2048]
+拼接有效 token 占比      [B,2049]
+残差头                   [B,2049] -> [B,128] -> [B,H*32]
+触觉去噪速度修正          [B,H,32]
+v_base + delta_v         [B,H,32]
+```
+
+这里使用正式模型和默认读取层的宽度；残差缩放、coverage 缩放与限幅已包含在
+`delta_v` 中。XYZ 是测点几何坐标，与输入信号的三个测量通道分别提供。
+以一片 4×4 阵列、4 帧历史为例，MLP 基线有 64 个 token，Tiny 有 32 个；
+两者的最终修正张量均为 `[B,50,32]`。这些值仅作维度说明。
+
+训练仍用原 Flow Matching 目标。每个动作块只计算一次触觉修正，Euler 步复用
+该修正和原观测前缀 KV cache。冻结与解冻改变参数更新范围，不改变上述维度；
+操作步骤见 [LingBot 两阶段微调](lingbot-forearm.zh-CN.md#两阶段微调)。

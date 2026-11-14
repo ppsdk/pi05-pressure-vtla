@@ -1,6 +1,8 @@
 # Data directories.
 assets/
 checkpoints/
+tmp/
+.render-cache/
 data/
 wandb/
 .venv-pressure/

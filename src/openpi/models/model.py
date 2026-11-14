@@ -256,6 +256,10 @@ class BaseModelConfig(abc.ABC):
         logger.info(f"train_config: {train_config}")
         model = pi0_pytorch.PI0Pytorch(config=train_config.model)
         safetensors.torch.load_model(model, weight_path)
+        if getattr(getattr(train_config.model, "pressure", None), "lingbot_touch", None) is not None:
+            from openpi.models_pytorch.lingbot_forearm import initialize_lingbot_forearm  # noqa: PLC0415
+
+            initialize_lingbot_forearm(model)
         return model
 
     @abc.abstractmethod
