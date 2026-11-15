@@ -5,6 +5,7 @@ from collections.abc import Sequence
 import dataclasses
 import difflib
 import logging
+import math
 import pathlib
 from typing import Any, Literal, Protocol, TypeAlias
 
@@ -550,6 +551,8 @@ class TrainConfig:
     pressure_config_path: str | None = None
     # Initialization-only bundle; resume and deployment use the full checkpoint.
     lingbot_touch_bundle_path: str | None = None
+    # Scale the LR of unfrozen pretrained LingBot parameters relative to new adapters.
+    lingbot_pretrained_lr_scale: float = 1.0
     # Freeze the base action policy while training tactile encoder + residual adapter.
     tactile_residual_freeze_base: bool = False
 
@@ -623,6 +626,11 @@ class TrainConfig:
         if self.pressure_config_path is not None:
             object.__setattr__(self, "model", resolve_pressure_config(self.model, self.pressure_config_path))
             object.__setattr__(self, "pressure_config_path", None)
+        scale = self.lingbot_pretrained_lr_scale
+        if isinstance(scale, bool) or not isinstance(scale, (int, float)) or not math.isfinite(scale) or scale <= 0:
+            raise ValueError("lingbot_pretrained_lr_scale must be finite and positive")
+        if scale != 1.0 and getattr(getattr(self.model, "pressure", None), "lingbot_touch", None) is None:
+            raise ValueError("lingbot_pretrained_lr_scale requires a LingBot pressure encoder")
         if self.resume and self.overwrite:
             raise ValueError("Cannot resume and overwrite at the same time.")
         if self.pressure_freeze_backbone and getattr(self.model, "pressure", None) is None:

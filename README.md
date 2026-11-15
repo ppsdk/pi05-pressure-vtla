@@ -2,7 +2,7 @@
 
 基于官方 [openpi](https://github.com/Physical-Intelligence/openpi) 的数值压力/触觉阵列扩展，采用 PyTorch。支持触觉前缀融合与触觉动作向量场残差，沿用原 ActionExpert 与 Flow Matching 动作生成结构。
 
-CPU 组件测试已通过。LingBot-Touch Tiny 真实权重已完成合成输入的前向、反向和恢复检查；完整 π0.5 权重训练与真实机器人效果尚未验证。
+CPU 组件测试及缩小模型的两阶段训练、恢复和推理链路已通过。LingBot-Touch Tiny 真实权重已完成合成输入的前向、反向和恢复检查；完整 π0.5 权重训练与真实机器人效果尚未验证。
 
 ## 文档入口
 
@@ -28,6 +28,8 @@ CPU 组件测试已通过。LingBot-Touch Tiny 真实权重已完成合成输入
 启用 LingBot-Touch 时，在完整压力 JSON 中配置小臂几何和信号标定，并加入
 `lingbot_touch`。先冻结 Tiny 训练适配层，再按验证表现决定是否解冻微调。
 阶段切换需要新建实验并加载上一阶段权重，具体命令见两阶段微调文档。
+加载时会核对几何、标定和归一化资产；阶段二可用 `--lingbot-pretrained-lr-scale`
+为已解冻的预训练编码器设置较小学习率。恢复会检查优化器参数组及倍率。
 
 ## CPU 快速验证
 
@@ -54,6 +56,7 @@ Linux/macOS 对应使用 `.venv-pressure/bin/python`。组件测试不下载模�
 | [lingbot_forearm.py](src/openpi/models_pytorch/lingbot_forearm.py) | 预训练触觉权重、小臂时空编码与状态条件读取 |
 | [pi0_pytorch.py](src/openpi/models_pytorch/pi0_pytorch.py) | 前缀、训练 forward 与缓存推理接入 |
 | [pressure_training.py](src/openpi/training/pressure_training.py) | 受控加载、冻结与 checkpoint 契约 |
+| [pytorch_training.py](src/openpi/training/pytorch_training.py) | 分组学习率、优化器恢复和实验目录检查 |
 | [tests/vtla](tests/vtla) | CPU 组件与接入测试 |
 
 完整模型训练前需绑定真实阵列尺寸、原始数据和时间契约、标定资产、机器人动作定义与官方权重，详见中文使用说明。

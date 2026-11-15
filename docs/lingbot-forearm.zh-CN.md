@@ -74,6 +74,10 @@ python scripts/train_pytorch.py pi05_pressure_forearm \
 元数据检查。使用新结构需要重新训练触觉分支；旧 MLP 的 VTLA checkpoint 不能
 直接严格加载为 LingBot checkpoint。原无触觉 π0.5 基座可通过原迁移入口加载。
 
+从完整 VTLA checkpoint 开始新实验时，加载前也会核对几何、标定、输入时间尺度、
+残差设置及归一化资产。允许改变冻结策略；改变传感器语义或统计会报错，即使张量
+形状相同也不能直接沿用。完整 checkpoint 缺少 `pressure_config.json` 时同样拒绝加载。
+
 ## 两阶段微调
 
 先确认 π0.5 已适配目标机器人的相机、状态和动作接口，并能完成基本抱夹。
@@ -158,7 +162,8 @@ python scripts/train_pytorch.py pi05_pressure_forearm \
 ```
 
 使用新的实验名和优化器，从选定的阶段一 checkpoint 加载所有模型权重。
-这一步不传官方 Tiny bundle；再次传入会覆盖已经训练的 Tiny 参数。
+这一步不传官方 Tiny bundle；训练入口会拒绝同时加载完整 VTLA checkpoint 和初始化 bundle，
+以免覆盖已训练的 Tiny 参数。
 下面以 2000 步、峰值学习率 `1e-5` 为试跑起点，需根据验证结果调整。
 
 ```bash
@@ -176,8 +181,11 @@ python scripts/train_pytorch.py pi05_pressure_forearm \
   --lr-schedule.decay-steps 2000
 ```
 
-当前优化器对全部可训练参数使用同一学习率。代码尚未提供分层学习率、自动
-两阶段调度或只解冻最后几层的配置；这些策略需要另行实现。
+默认所有可训练参数仍使用同一学习率。若希望 Tiny 更新更小，可在阶段二命令中加入
+`--lingbot-pretrained-lr-scale 0.1`：以上例峰值 `1e-5` 为基准，新增适配层和残差头
+使用 `1e-5`，已解冻的 Tiny 参数使用 `1e-6`。这个比例在 warmup 和衰减期间保持不变，
+冻结参数不会加入优化器。倍率必须为有限正数，默认值为 `1.0`。
+这是可选起点，需要用验证集判断；当前没有自动两阶段调度或仅解冻最后几层的配置。
 
 ### 损失、恢复与模型选择
 
@@ -188,8 +196,15 @@ python scripts/train_pytorch.py pi05_pressure_forearm \
 
 同一阶段中断后，保持实验名、冻结设置、数据与模型配置，使用 `--resume`
 继续训练。恢复会读取该实验最新 checkpoint 的优化器和步数。
+新 checkpoint 还记录每个优化器参数组的参数名、顺序与学习率倍率；恢复时会核对
+这些字段及 AdamW 的 betas、eps 和 weight decay。改变冻结集合、倍率或优化器设置
+应新建实验。旧优化器文件没有参数名时，会提示警告并只核对组大小及已有设置。
 两阶段切换时改变了优化器参数集合，应新建实验并通过
 `--pytorch-weight-path` 加载权重，不能用 `--resume` 跨阶段恢复。
+
+新训练若发现实验目录已存在，会要求更换实验名或明确使用 `--resume` / `--overwrite`；
+不会静默混入旧 checkpoint。梯度非有限时会在优化器更新前报错。
+当前恢复不保存数据迭代位置和所有随机数状态，不能保证与未中断训练逐步一致。
 
 比较无触觉基座、冻结 Tiny 的适配版和解冻微调版，保持数据划分和评估条件
 一致。验证集动作损失用于观察拟合，抱夹成功率、滑移和接触变化后的恢复
@@ -211,14 +226,19 @@ python scripts/check_lingbot_forearm.py \
 
 该检查覆盖官方前向参考的一致性、冻结权重时适配层反向、解冻预训练层反向和完整
 checkpoint 恢复；一致性对照暂时移除新增的皮肤 embedding，并使用匹配单指布局。
-这项检查验证权重和计算复用；小臂零样本泛化仍需真实数据评估。残差集成测试使用小型替身 VLA，
-未加载完整 π0.5 权重；未运行机器人数据训练、GPU 训练、实机任务或延迟测试。
+这项检查验证权重和计算复用；小臂零样本泛化仍需真实数据评估。
+`tests/vtla` 的残差集成测试使用小型替身 VLA；`tests/pressure_integration` 则运行
+真实模型模块的缩小配置、测试词表和合成数据。两者均未加载完整 π0.5 权重，
+也未运行机器人数据训练、GPU 训练、实机任务或延迟测试。
 
 2026-11-14 本机验证：Python 3.11、torch 2.7.1+cpu、numpy 1.26.4；
 `tests/vtla` 共 166 项通过。真实 Tiny 权重的参考前向最大绝对误差为
 `1.8477439880371094e-06`；冻结适配、解冻微调反向及独立 checkpoint 恢复通过。
 源 `encoder.pt` SHA256 为
 `ddb8b435963348fff5b8a83bb48f995978dc8841d82f87be007c775bf5a88055`。
-完整训练 CLI/真实缩小 π0.5 主干集成未在本机执行，现有测试环境缺少
-JAX、Flax、Transformers 和 Tyro。训练入口已经接线，但上述 CPU 组件/替身测试
-不能替代这项验证。
+
+2026-11-15 在独立 `.venv-integration` 环境补齐完整 CPU 集成依赖后，组件测试
+185 项、集成测试 9 项通过。新增链路使用随机缩小 LingBot 和 π0.5：冻结编码器训练、
+checkpoint 独立部署、阶段内恢复、加载阶段一并解冻，以及保留 0.1 学习率倍率的阶段二恢复
+均通过检查。配置 CLI 也能解析新倍率。该检查建立的是训练链路正确性，未衡量任务效果。
+复现命令与环境见 [验证记录](VALIDATION.md#2026-11-15-training-contracts-and-windows-integration)。

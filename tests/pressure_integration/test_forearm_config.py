@@ -2,6 +2,7 @@
 
 import dataclasses
 import json
+from pathlib import Path
 import sys
 
 import pytest
@@ -73,3 +74,24 @@ def test_forearm_json_resolved_through_training_cli(layout, monkeypatch):
 def test_json_rejects_non_pressure_training_config(layout):
     with pytest.raises(ValueError, match="pressure-enabled"):
         training_config.get_config("debug_pi05", pressure_config_path=str(layout))
+
+
+def test_lingbot_lr_scale_resolved_through_training_cli(monkeypatch):
+    example = Path(__file__).resolve().parents[2] / "examples/pressure/forearm_lingbot.example.json"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "train_pytorch.py",
+            "pi05_pressure_forearm",
+            "--exp-name",
+            "lingbot_scale",
+            "--pressure-config-path",
+            str(example),
+            "--lingbot-pretrained-lr-scale",
+            "0.1",
+        ],
+    )
+    config = training_config.cli()
+    assert config.lingbot_pretrained_lr_scale == 0.1
+    assert config.model.pressure.lingbot_touch is not None

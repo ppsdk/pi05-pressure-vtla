@@ -18,6 +18,7 @@ from openpi.models_pytorch.lingbot_touch import EncoderConfig
 from openpi.models_pytorch.lingbot_touch import TargetEncoder
 from openpi.training.pressure_training import configure_trainable_parameters
 from openpi.training.pressure_training import save_pressure_metadata
+from openpi.training.pressure_training import validate_finetune_checkpoint
 from openpi.training.pressure_training import validate_pressure_metadata
 
 
@@ -207,3 +208,36 @@ def test_base_freeze_keeps_pretrained_freeze_and_readout_trainable(setup):
     assert not model.base.weight.requires_grad
     assert not any(p.requires_grad for p in setup.encoder.pretrained.parameters())
     assert setup.encoder.readout_queries.requires_grad
+
+
+def test_stage_transition_changes_freezing_but_preserves_sensor_contract(setup):
+    model = nn.Module()
+    model.pressure_encoder = setup.encoder
+    model.config = SimpleNamespace(pressure=setup.config)
+    safetensors.torch.save_model(model, setup.directory / "model.safetensors")
+    save_pressure_metadata(model, setup.directory, freeze_backbone=True, stats_path=setup.stats_path)
+    stage2 = dataclasses.replace(
+        setup.config, lingbot_touch=dataclasses.replace(setup.config.lingbot_touch, freeze_pretrained=False)
+    )
+    model.config = SimpleNamespace(pressure=stage2)
+    contract = {"freeze_backbone": False, "stats_path": setup.stats_path}
+    validate_finetune_checkpoint(model, setup.directory, **contract)
+    assert not model.config.pressure.lingbot_touch.freeze_pretrained
+    with pytest.raises(ValueError, match="configuration differs"):
+        validate_pressure_metadata(model, setup.directory, **contract)
+    with pytest.raises(ValueError, match="cannot be combined"):
+        validate_finetune_checkpoint(model, setup.directory, bundle_path=setup.directory, **contract)
+    model.config = SimpleNamespace(pressure=dataclasses.replace(stage2, coordinate_scale_mm=50))
+    with pytest.raises(ValueError, match="configuration differs"):
+        validate_finetune_checkpoint(model, setup.directory, **contract)
+    model.config = SimpleNamespace(pressure=stage2)
+    np.savez(setup.stats_path, mean=np.array(5), scale=np.array(1))
+    with pytest.raises(ValueError, match="statistics differ"):
+        validate_finetune_checkpoint(model, setup.directory, **contract)
+
+
+def test_loaded_encoder_cannot_be_reinitialized_from_bundle(setup):
+    model = nn.Module()
+    model.pressure_encoder = setup.encoder
+    with pytest.raises(ValueError, match="already initialized"):
+        initialize_lingbot_forearm(model, bundle_path=setup.directory)

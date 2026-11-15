@@ -11,13 +11,22 @@ permissions:
 
 jobs:
   integration:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: .venv-integration/bin/python
+          - os: windows-latest
+            python: .venv-integration/Scripts/python.exe
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     env:
       CUDA_VISIBLE_DEVICES: ""
       GIT_LFS_SKIP_SMUDGE: "1"
       WANDB_MODE: disabled
       OMP_NUM_THREADS: "2"
+      JAX_PLATFORMS: cpu
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -30,13 +39,11 @@ jobs:
       - name: Install CPU dependencies in an isolated environment
         run: |
           python -m venv .venv-integration
-          . .venv-integration/bin/activate
-          python -m pip install --upgrade pip uv
-          python -m pip install torch==2.7.1+cpu torchvision==0.22.1+cpu --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
-          uv pip install -r requirements-pressure-integration-cpu.txt
-          python scripts/install_transformers_patch.py
+          ${{ matrix.python }} -m pip install --upgrade pip uv
+          ${{ matrix.python }} -m pip install torch==2.7.1+cpu torchvision==0.22.1+cpu --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+          ${{ matrix.python }} -m uv pip install --python ${{ matrix.python }} -r requirements-pressure-integration-cpu.txt
+          ${{ matrix.python }} scripts/install_transformers_patch.py
       - name: Verify CPU and run the real small-model pipeline
         run: |
-          . .venv-integration/bin/activate
-          python -c "import torch, jax, flax, transformers, sentencepiece; assert not torch.cuda.is_available(); assert transformers.__version__ == '4.53.2'; print(torch.__version__)"
-          python -m pytest tests/pressure_integration -q
+          ${{ matrix.python }} -c "import torch, jax, flax, transformers, sentencepiece; assert not torch.cuda.is_available(); assert transformers.__version__ == '4.53.2'; print(torch.__version__)"
+          ${{ matrix.python }} -m pytest tests/pressure_integration -q

@@ -20,7 +20,8 @@ spm = pytest.importorskip("sentencepiece")
 pytest.importorskip("transformers")
 
 
-def test_synthetic_npz_train_final_checkpoint_resume_and_policy_inference(tmp_path, monkeypatch):
+@pytest.mark.parametrize("encoder_kind", ["mlp", "lingbot"])
+def test_synthetic_npz_train_final_checkpoint_resume_and_policy_inference(tmp_path, monkeypatch, encoder_kind):
     """Run real reader/transforms/trainer/model/checkpoint/policy on CPU with small configs."""
     monkeypatch.setenv("OPENPI_DATA_HOME", str(tmp_path / "openpi-cache"))
     monkeypatch.setenv("HF_HOME", str(tmp_path / "hf-cache"))
@@ -34,7 +35,10 @@ def test_synthetic_npz_train_final_checkpoint_resume_and_policy_inference(tmp_pa
 
     from openpi.models import pi0_config  # noqa: PLC0415
     from openpi.models import tokenizer as tokenizer_module  # noqa: PLC0415
+    from openpi.models.pressure_config import LingBotTouchConfig  # noqa: PLC0415
     from openpi.models.pressure_config import PressureConfig  # noqa: PLC0415
+    from openpi.models_pytorch.lingbot_touch import EncoderConfig  # noqa: PLC0415
+    from openpi.models_pytorch.lingbot_touch import TargetEncoder  # noqa: PLC0415
     from openpi.policies import policy_config  # noqa: PLC0415
     from openpi.training import config as training_config  # noqa: PLC0415
     from openpi.training.pressure_dataset import PressureNpzDataset  # noqa: PLC0415
@@ -131,6 +135,28 @@ def test_synthetic_npz_train_final_checkpoint_resume_and_policy_inference(tmp_pa
         pressure_freeze_backbone=True,
         wandb_enabled=False,
     )
+    if encoder_kind == "lingbot":
+        # Small random bundle, deliberately not an official pretrained checkpoint.
+        settings = LingBotTouchConfig(sensor_zero=(-3,), sensor_span=(6,), time_scale_seconds=0.1, readout_dim=16)
+        architecture = {**settings.encoder_config, "embed_dim": 40, "depth": 2, "num_heads": 2, "output_layers": [0, 1]}
+        settings = dataclasses.replace(settings, encoder_config=architecture)
+        bundle = tmp_path / "synthetic-lingbot"
+        bundle.mkdir()
+        (bundle / "config.json").write_text(json.dumps(architecture), encoding="utf-8")
+        initial_encoder = TargetEncoder(EncoderConfig.from_dict(architecture)).state_dict()
+        torch.save(initial_encoder, bundle / "encoder.pt")
+        cfg = dataclasses.replace(
+            cfg,
+            model=dataclasses.replace(
+                cfg.model,
+                pressure=dataclasses.replace(cfg.model.pressure, lingbot_touch=settings),
+                tactile_residual_enabled=True,
+                tactile_residual_only=True,
+                tactile_residual_freeze_base=True,
+            ),
+            lingbot_touch_bundle_path=str(bundle),
+            lr_schedule=dataclasses.replace(cfg.lr_schedule, warmup_steps=0, peak_lr=1e-3, decay_steps=20),
+        )
     monkeypatch.setattr(training_config, "get_config", lambda name: cfg)
     compute_norm_stats.main(cfg.name)
     train_pytorch.train_loop(cfg)
@@ -171,6 +197,38 @@ def test_synthetic_npz_train_final_checkpoint_resume_and_policy_inference(tmp_pa
     assert third.is_file()
     first_weights = safetensors.torch.load_file(first / "model.safetensors")
     third_weights = safetensors.torch.load_file(third)
-    assert not torch.equal(
-        first_weights["pressure_encoder.patch_in.weight"], third_weights["pressure_encoder.patch_in.weight"]
-    )
+    learned_key = "pressure_encoder.patch_in.weight" if encoder_kind == "mlp" else "tactile_residual_adapter.2.weight"
+    assert not torch.equal(first_weights[learned_key], third_weights[learned_key])
+
+    # Reusing a name must fail before training can overwrite an existing checkpoint.
+    with pytest.raises(FileExistsError, match="already exists"):
+        train_pytorch.train_loop(cfg)
+
+    if encoder_kind == "lingbot":
+        for name, weight in initial_encoder.items():
+            torch.testing.assert_close(first_weights[f"pressure_encoder.pretrained.{name}"], weight, rtol=0, atol=0)
+        second_stage = dataclasses.replace(
+            cfg,
+            exp_name="encoder_ft",
+            pytorch_weight_path=str(first),
+            lingbot_touch_bundle_path=None,
+            lingbot_pretrained_lr_scale=0.1,
+            model=dataclasses.replace(
+                cfg.model,
+                pressure=dataclasses.replace(
+                    cfg.model.pressure,
+                    lingbot_touch=dataclasses.replace(cfg.model.pressure.lingbot_touch, freeze_pretrained=False),
+                ),
+            ),
+        )
+        train_pytorch.train_loop(second_stage)
+        stage2_weights = safetensors.torch.load_file(second_stage.checkpoint_dir / "2" / "model.safetensors")
+        pretrained_key = "pressure_encoder.pretrained.transformer.blocks.0.attn.qkv.weight"
+        assert not torch.equal(stage2_weights[pretrained_key], first_weights[pretrained_key])
+        base_key = next(k for k in first_weights if k.startswith("paligemma_with_expert.") and k.endswith("weight"))
+        torch.testing.assert_close(stage2_weights[base_key], first_weights[base_key], rtol=0, atol=0)
+        train_pytorch.train_loop(dataclasses.replace(second_stage, resume=True, num_train_steps=3))
+        optimizer_state = torch.load(second_stage.checkpoint_dir / "3" / "optimizer.pt", weights_only=True)
+        groups = optimizer_state["param_groups"]
+        assert len(groups) == 2
+        assert groups[1]["lr"] == pytest.approx(groups[0]["lr"] * 0.1)

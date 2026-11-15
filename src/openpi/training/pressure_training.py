@@ -194,6 +194,7 @@ def validate_pressure_metadata(
     stats_path: str | Path | None = None,
     policy_contract: dict | None = None,
     current_norm_stats_json: str | None = None,
+    allow_training_changes: bool = False,
 ) -> None:
     """Reject resume with different hardware/token, freeze, or normalization contracts."""
     checkpoint_dir = Path(checkpoint_dir)
@@ -212,11 +213,22 @@ def validate_pressure_metadata(
     saved_config = metadata.get("pressure")
     if saved_config is not None:
         saved_config = PressureConfig.from_dict(saved_config).to_dict()
+    if allow_training_changes:
+        # Stage changes may alter freezing, never geometry/calibration or token semantics.
+        for value in (saved_config, config):
+            if value is not None and value.get("lingbot_touch") is not None:
+                value["lingbot_touch"].pop("freeze_pretrained", None)
     if saved_config != config:
         raise ValueError("Pressure configuration differs from the checkpoint.")
-    if metadata.get("tactile_residual") != _tactile_residual_config(model):
+    saved_residual = metadata.get("tactile_residual")
+    current_residual = _tactile_residual_config(model)
+    if allow_training_changes:
+        for value in (saved_residual, current_residual):
+            if value is not None:
+                value.pop("freeze_base", None)
+    if saved_residual != current_residual:
         raise ValueError("Tactile residual configuration differs from the checkpoint.")
-    if metadata.get("freeze_backbone") != freeze_backbone:
+    if not allow_training_changes and metadata.get("freeze_backbone") != freeze_backbone:
         raise ValueError("Pressure backbone freeze setting differs from the checkpoint optimizer contract.")
     expected_hash = metadata.get("stats_sha256")
     actual_hash = None if stats_path is None else _file_hash(stats_path)
@@ -238,3 +250,20 @@ def validate_pressure_metadata(
             raise ValueError("Checkpoint state/action normalization statistics differ from the saved contract.")
         if current_norm_stats_json is not None and _norm_stats_hash(current_norm_stats_json) != expected_norm_hash:
             raise ValueError("Current state/action normalization statistics differ from the checkpoint.")
+
+
+def validate_finetune_checkpoint(model, checkpoint_dir, *, bundle_path=None, **contract) -> None:
+    """Check a full VTLA checkpoint before weight-only stage initialization.
+
+    Plain pi0/pi05 checkpoints have no tactile contract and can initialize a new
+    branch. Full VTLA checkpoints must retain their observation/action semantics.
+    """
+    checkpoint_dir = Path(checkpoint_dir)
+    with safe_open(str(checkpoint_dir / "model.safetensors"), framework="pt", device="cpu") as checkpoint:
+        keys = checkpoint.keys()
+        is_vtla = any(name.startswith(("pressure_encoder.", "tactile_residual_adapter.")) for name in keys)
+    if not is_vtla:
+        return
+    if bundle_path is not None:
+        raise ValueError("A full VTLA checkpoint cannot be combined with a LingBot bundle; omit the bundle path")
+    validate_pressure_metadata(model, checkpoint_dir, allow_training_changes=True, **contract)

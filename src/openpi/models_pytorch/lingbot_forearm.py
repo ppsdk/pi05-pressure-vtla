@@ -231,6 +231,8 @@ def initialize_lingbot_forearm(model, *, bundle_path=None, stats_path=None):
             raise ValueError("lingbot_touch_bundle_path requires a LingBot forearm encoder")
         return
     if bundle_path is not None:
+        if bool(encoder.pretrained_ready):
+            raise ValueError("LingBot weights are already initialized; omit the bundle path when loading a checkpoint")
         encoder.initialize_from_bundle(bundle_path)
     if stats_path is not None:
         encoder.bind_normalization(stats_path)

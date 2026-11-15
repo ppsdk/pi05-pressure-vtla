@@ -13,6 +13,7 @@ from openpi.training.pressure_training import load_base_weights
 from openpi.training.pressure_training import pressure_policy_contract
 from openpi.training.pressure_training import save_pressure_metadata
 from openpi.training.pressure_training import should_save_checkpoint
+from openpi.training.pressure_training import validate_finetune_checkpoint
 from openpi.training.pressure_training import validate_pressure_metadata
 
 
@@ -268,3 +269,13 @@ def test_real_contract_requires_pressure_and_state_action_assets(tmp_path):
             policy_contract=_contract(),
             stats_path=pressure_stats,
         )
+
+
+def test_finetune_contract_allows_plain_base_but_requires_metadata_for_vtla(tmp_path):
+    path = tmp_path / "model.safetensors"
+    safetensors.torch.save_model(TinyPolicy(pressure=False), path)
+    target = TinyPolicy()
+    validate_finetune_checkpoint(target, tmp_path, freeze_backbone=True)
+    safetensors.torch.save_model(target, path)
+    with pytest.raises(ValueError, match=r"requires pressure_config\.json"):
+        validate_finetune_checkpoint(target, tmp_path, freeze_backbone=True)

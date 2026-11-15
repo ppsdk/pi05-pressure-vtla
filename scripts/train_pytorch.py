@@ -46,6 +46,7 @@ import openpi.shared.normalize as _normalize
 import openpi.training.config as _config
 import openpi.training.data_loader as _data
 import openpi.training.pressure_training as _pressure_training
+import openpi.training.pytorch_training as _pytorch_training
 
 
 def init_logging():
@@ -271,7 +272,7 @@ def load_checkpoint(model, optimizer, checkpoint_dir, device, *, config=None, da
         else:
             raise FileNotFoundError(f"No optimizer checkpoint found at {ckpt_dir}")
 
-        optimizer.load_state_dict(optimizer_state_dict)
+        _pytorch_training.load_optimizer_state(optimizer, optimizer_state_dict)
         del optimizer_state_dict
         torch.cuda.empty_cache()
         gc.collect()
@@ -342,8 +343,23 @@ def train_loop(config: _config.TrainConfig):
     is_main = (not use_ddp) or (dist.get_rank() == 0)
     set_seed(config.seed, local_rank)
 
-    # Initialize checkpoint directory and wandb
-    resuming = False
+    # Rank zero owns filesystem changes; propagate setup failures before DDP work.
+    directory_error = [None]
+    if is_main:
+        try:
+            _pytorch_training.prepare_checkpoint_directory(
+                config.checkpoint_dir, resume=config.resume, overwrite=config.overwrite
+            )
+        except (OSError, ValueError) as error:
+            if not use_ddp:
+                raise
+            directory_error[0] = str(error)
+    if use_ddp:
+        dist.broadcast_object_list(directory_error, src=0, device=device)
+        if directory_error[0] is not None:
+            raise RuntimeError(directory_error[0])
+
+    resuming = config.resume
     if config.resume:
         # Find checkpoint directory based on experiment name
         exp_checkpoint_dir = config.checkpoint_dir
@@ -359,19 +375,6 @@ def train_loop(config: _config.TrainConfig):
                 raise FileNotFoundError(f"No valid checkpoints found in {exp_checkpoint_dir} for resume")
         else:
             raise FileNotFoundError(f"Experiment checkpoint directory {exp_checkpoint_dir} does not exist for resume")
-    elif config.overwrite and config.checkpoint_dir.exists():
-        shutil.rmtree(config.checkpoint_dir)
-        logging.info(f"Overwriting checkpoint directory: {config.checkpoint_dir}")
-
-    # Create checkpoint directory with experiment name
-    if not resuming:
-        # For new runs, create experiment-specific checkpoint directory
-        exp_checkpoint_dir = config.checkpoint_dir
-        exp_checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        logging.info(f"Created experiment checkpoint directory: {exp_checkpoint_dir}")
-    else:
-        # For resume, checkpoint_dir is already set to the experiment directory
-        logging.info(f"Using existing experiment checkpoint directory: {config.checkpoint_dir}")
 
     # Initialize wandb (only on main process)
     if is_main:
@@ -488,6 +491,17 @@ def train_loop(config: _config.TrainConfig):
         logging.info(f"Loading weights from: {config.pytorch_weight_path}")
 
         model_path = os.path.join(config.pytorch_weight_path, "model.safetensors")
+        _pressure_training.validate_finetune_checkpoint(
+            model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model,
+            config.pytorch_weight_path,
+            bundle_path=config.lingbot_touch_bundle_path,
+            freeze_backbone=config.pressure_freeze_backbone,
+            stats_path=getattr(data_config, "pressure_stats_path", None),
+            policy_contract=_pressure_training.pressure_policy_contract(model_cfg, data_config),
+            current_norm_stats_json=(
+                _normalize.serialize_json(data_config.norm_stats) if data_config.norm_stats is not None else None
+            ),
+        )
         _pressure_training.load_base_weights(
             (model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model),
             model_path,
@@ -512,7 +526,11 @@ def train_loop(config: _config.TrainConfig):
 
     # Create optimizer with config parameters
     optim = torch.optim.AdamW(
-        trainable_parameters,
+        _pytorch_training.build_optimizer_param_groups(
+            model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model,
+            lr=peak_lr,
+            lingbot_pretrained_lr_scale=config.lingbot_pretrained_lr_scale,
+        ),
         lr=peak_lr,
         betas=(config.optimizer.b1, config.optimizer.b2),
         eps=config.optimizer.eps,
@@ -585,8 +603,7 @@ def train_loop(config: _config.TrainConfig):
             actions = actions.to(device)  # noqa: PLW2901
 
             # Update LR
-            for pg in optim.param_groups:
-                pg["lr"] = lr_schedule(global_step)
+            _pytorch_training.set_learning_rate(optim, lr_schedule(global_step))
 
             # Forward pass
             losses = model(observation, actions)
@@ -607,7 +624,7 @@ def train_loop(config: _config.TrainConfig):
 
             # Gradient clipping
             grad_norm = torch.nn.utils.clip_grad_norm_(
-                trainable_parameters, max_norm=config.optimizer.clip_gradient_norm
+                trainable_parameters, max_norm=config.optimizer.clip_gradient_norm, error_if_nonfinite=True
             )
 
             # Optimizer step

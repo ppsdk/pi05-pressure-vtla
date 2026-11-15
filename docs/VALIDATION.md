@@ -53,3 +53,16 @@ The current residual path adds a tactile correction in `denoise_step`; the origi
 ## Training guidance
 
 [The two-stage guide](lingbot-forearm.zh-CN.md#两阶段微调) describes frozen-Tiny adapter training, optional pretrained-encoder fine-tuning, initialization, and same-stage resume. Suggested learning rates and step counts are starting points without real-data validation. They are not measured task results.
+
+## 2026-11-15: training contracts and Windows integration
+
+- Windows, isolated `.venv-integration`, Python 3.11.1, torch 2.7.1+cpu, NumPy 1.26.4, JAX 0.5.3, Flax 0.10.2 and Transformers 4.53.2 with the repository replacement files. CUDA was unavailable.
+- `python -m pytest tests/vtla -q`: 185 passed in 11.24s.
+- `python -m pytest tests/pressure_integration -q --tb=short`: 9 passed in 57.53s. Run these two suites separately; their existing module names overlap under pytest's default import mode.
+- The real small-model pipeline now covers both the MLP prefix and the LingBot residual. Synthetic NPZ, a local test SentencePiece vocabulary and random small model weights exercise statistics generation, actual model training, final checkpoint, deployment without training assets, and same-stage resume.
+- The LingBot case checks that stage one leaves pretrained weights unchanged. Stage two loads the selected first-stage checkpoint, updates the unfrozen encoder, preserves base-policy weights, and resumes with the pretrained/adaptor LR ratio still 0.1.
+- New component checks reject same-shaped hardware/calibration/statistics drift, missing full-VTLA metadata, bundle reinitialization, changed optimizer groups/names/scales/settings, and accidental experiment-directory reuse. Plain pi0/pi05 initialization and legacy optimizer loading remain supported; legacy optimizers emit a warning because parameter names were not recorded.
+- Initial integration runs exposed Windows drive paths being mistaken for URL schemes, and NumPy LR scalars preventing restricted optimizer-file loading. Both were fixed, then the affected suites passed. New optimizer LR values are Python floats; legacy optimizer/metadata loading behavior is retained.
+- Ruff lint and format checks passed for the 12 changed/new Python files; compilation and `git diff --check` passed. The CPU integration workflow now includes Linux and Windows runners; local results do not establish hosted workflow status.
+
+This run does not use official full pi05 weights, real sensor measurements or robot demonstrations. It does not establish task quality, GPU/DDP behavior or latency. Resume restores model, optimizer and step; data-iterator position and all RNG states are not restored, so whole-training bitwise continuation is not claimed.
